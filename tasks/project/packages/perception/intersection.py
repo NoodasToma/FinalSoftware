@@ -7,7 +7,10 @@ from tasks.project.packages.perception.apriltags import TagObservation
 from tasks.project.packages.sign_registry import SignSemantic
 
 _ALL_TURNS = {"left", "right", "straight"}
-_EXCLUSION_SIGNS = {"no-left-turn", "no-right-turn", "do-not-enter"}
+_CONSTRAINT_KINDS = {
+    "4-way-intersect", "T-intersection", "right-T-intersect",
+    "left-T-intersect", "oneway-right", "oneway-left", "do-not-enter",
+}
 
 
 def is_at_stop_line(tag_obs: TagObservation, lane_mask: np.ndarray) -> bool:
@@ -16,8 +19,8 @@ def is_at_stop_line(tag_obs: TagObservation, lane_mask: np.ndarray) -> bool:
 
     if tag_obs.side_length_px > 60:
         h = lane_mask.shape[0]
-        bottom_third = lane_mask[int(h * 2 / 3):, :]
-        if int(np.count_nonzero(bottom_third)) > bottom_third.size * 0.05:
+        bottom_third = lane_mask[2 * h // 3:, :]
+        if int(np.count_nonzero(bottom_third)) > 500:
             return True
 
     return False
@@ -27,13 +30,11 @@ def merge_turn_constraints(observed_signs: list[SignSemantic]) -> set[str]:
     allowed = set(_ALL_TURNS)
 
     for sign in observed_signs:
-        if sign.kind == "no-left-turn":
+        if sign.kind in _CONSTRAINT_KINDS:
+            allowed &= sign.available_turns
+        elif sign.kind == "no-left-turn":
             allowed.discard("left")
         elif sign.kind == "no-right-turn":
             allowed.discard("right")
-        elif sign.kind == "do-not-enter":
-            allowed.clear()
-        else:
-            allowed &= sign.available_turns
 
     return allowed
