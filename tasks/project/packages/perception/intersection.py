@@ -1,5 +1,4 @@
 # One thing to flag: lane_mask in is_at_stop_line is assumed to be a binary/grayscale mask where nonzero pixels represent red stop-line pixels. If Person A's traffic light module or Person C's pipeline passes a different format (e.g. a BGR crop), you'll need to align on that before C5 lands.
-
 from __future__ import annotations
 
 import numpy as np
@@ -18,9 +17,7 @@ def is_at_stop_line(tag_obs: TagObservation, lane_mask: np.ndarray) -> bool:
     if tag_obs.side_length_px > 60:
         h = lane_mask.shape[0]
         bottom_third = lane_mask[int(h * 2 / 3):, :]
-        red_pixel_count = int(np.count_nonzero(bottom_third))
-        threshold = bottom_third.size * 0.05
-        if red_pixel_count > threshold:
+        if int(np.count_nonzero(bottom_third)) > bottom_third.size * 0.05:
             return True
 
     return False
@@ -40,4 +37,3 @@ def merge_turn_constraints(observed_signs: list[SignSemantic]) -> set[str]:
             allowed &= sign.available_turns
 
     return allowed
-
