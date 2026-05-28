@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +11,8 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
 _CAMERA_CONFIG_SEARCH_PATHS = [
     # Relative to repo root when running on the bot
     "duckiebot/camera_driver/config/camera_config.yaml",
@@ -27,7 +30,7 @@ def _load_intrinsics() -> tuple[float, float, float, float]:
     Returns (fx, fy, cx, cy).  Falls back to Duckietown defaults and logs a
     warning **once** when the fallback is used.
     """
-    # yaml is a soft dependency & only needed here
+    # yaml is a soft dependency; only needed here
     try:
         import yaml  # PyYAML ships with the Duckiebot image
     except ImportError:
@@ -59,7 +62,7 @@ def _load_intrinsics() -> tuple[float, float, float, float]:
                     "apriltags: loaded camera_matrix intrinsics from %s", path
                 )
                 return fx, fy, cx, cy
-        except Exception as exc:  
+        except Exception as exc:  # noqa: BLE001
             logger.debug("apriltags: could not parse %s — %s", path, exc)
 
     logger.warning(
@@ -83,8 +86,10 @@ class TagObservation:
     est_yaw_rad: float
     corners: np.ndarray = field(repr=False)
 
+
 class AprilTagDetector:
-  
+   
+
     FAMILY: str = "tag36h11"
 
     def __init__(self, tag_size_m: float = 0.065) -> None:
@@ -99,8 +104,8 @@ class AprilTagDetector:
             and self._cy == _DEFAULT_INTRINSICS["cy"]
         )
 
-        # nthreads=1: deterministic, quad_decimate=2.0: ~2× faster at slight
-        # cost to detection range - fine for a 640×480 30 fps loop
+        # nthreads=1: deterministic; quad_decimate=2.0: ~2× faster at slight
+        # cost to detection range — fine for a 640×480 30 fps loop.
         self._detector: "Detector" = Detector(
             families=self.FAMILY,
             nthreads=1,
@@ -138,7 +143,7 @@ class AprilTagDetector:
         observations: list[TagObservation] = []
         for tag in raw_tags:
             if tag.decision_margin < 20:
-                # Low-confidence detections tend to have wrong IDs - skip them.
+                # Low-confidence detections tend to have wrong IDs — skip them.
                 continue
 
             corners = tag.corners.astype(int)            # shape (4, 2)
@@ -161,7 +166,7 @@ class AprilTagDetector:
             ))
 
         # Sort: nearest first (inf sorts last, then we flip by side_length_px
-        # for those fallback entries so the largest / closest proxy comes first)
+        # for those fallback entries so the largest / closest proxy comes first).
         observations.sort(
             key=lambda t: (
                 t.est_distance_m if math.isfinite(t.est_distance_m)
