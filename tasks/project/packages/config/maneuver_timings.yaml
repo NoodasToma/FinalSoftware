@@ -1,0 +1,7 @@
+base_speed: 0.30
+ramp_max_step: 0.05
+turn_inner_speed: 0.05
+turn_outer_speed: 0.45
+turn_ticks: 90
+straight_speed: 0.30
+straight_ticks: 60
