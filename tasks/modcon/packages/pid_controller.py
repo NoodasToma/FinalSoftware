@@ -3,7 +3,7 @@ import os
 import yaml
 import numpy as np
 
-_GAINS_FILE = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'config', 'modcon_config.yaml')
+GAINS_FILE = os.path.join(os.path.dirname(__file_), '..', '..', '..', 'config', 'modcon_config.yaml')
 try:
     with open(_GAINS_FILE) as _f:
         _g = yaml.safe_load(_f) or {}
@@ -25,4 +25,23 @@ def PIDController(
     prev_int: float,
     delta_t: float,
 ) -> Tuple[float, float, float, float]:
-    raise NotImplementedError("TODO: Implement this function")
+
+    # 1. Compute tracking error
+    e = theta_ref - theta_hat
+
+    # 2. Integral term (finite sum approximation)
+    e_int = prev_int + e * delta_t
+
+    # 3. Derivative term (finite difference)
+    e_der = (e - prev_e) / delta_t if delta_t > 0 else 0.0
+
+    # 4. PID control law
+    omega = K_P * e + K_I * e_int + K_D * e_der
+
+    # 5. Saturation (limit angular velocity)
+    omega = max(MIN_OMEGA, min(MAX_OMEGA, omega))
+
+    # 6. Output
+    v = v_0
+
+    return v, omega, e, e_int

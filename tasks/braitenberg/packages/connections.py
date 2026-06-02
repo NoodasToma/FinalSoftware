@@ -3,10 +3,22 @@ import numpy as np
 
 
 def get_motor_left_matrix(shape: Tuple[int, int]) -> np.ndarray:
-    """Left motor weight matrix: highest at bottom-left, decreasing toward top-right."""
-    raise NotImplementedError("TODO: Implement this function")
+    """
+    Left motor weight matrix: high weights at bottom-left.
+    Duck on left → high left motor signal → turns right (away).
+    """
+    h, w = shape
+    i = np.arange(h).reshape(h, 1) / (h - 1)   # 0.0 top, 1.0 bottom
+    j = np.arange(w).reshape(1, w) / (w - 1)   # 0.0 left, 1.0 right
+    return 1 - (i + j) / 2
 
 
 def get_motor_right_matrix(shape: Tuple[int, int]) -> np.ndarray:
-    """Right motor weight matrix: highest at bottom-right, decreasing toward top-left."""
-    raise NotImplementedError("TODO: Implement this function")
+    """
+    Right motor weight matrix: high weights at bottom-right.
+    Duck on right → high right motor signal → turns left (away).
+    """
+    h, w = shape
+    i = np.arange(h).reshape(h, 1) / (h - 1)
+    j = np.arange(w).reshape(1, w) / (w - 1)
+    return 1 - (i + (1 - j)) / 2
