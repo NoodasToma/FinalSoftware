@@ -60,3 +60,6 @@ tasks/object_detection/dataset/*
 
 # Model artifacts
 tasks/object_detection/models/*
+
+# Sim verification harness output (tasks/project/sim_tests/*)
+_sim_logs/

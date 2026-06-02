@@ -23,6 +23,10 @@ func _apply() -> void:
 		mat = base.duplicate() as StandardMaterial3D if base != null else StandardMaterial3D.new()
 		mi.set_surface_override_material(0, mat)
 	mat.albedo_color   = Color.WHITE
+	# Render the tag UNSHADED so scene lighting can't wash out the black/white
+	# contrast — pupil_apriltags needs crisp, high-contrast cells to decode, and
+	# lit shading made detection pose/angle-dependent.
+	mat.shading_mode   = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
 	mat.uv1_scale      = Vector3(1.0, 1.0, 1.0)
 	mat.uv1_offset     = Vector3.ZERO

@@ -11,6 +11,10 @@
 [ext_resource type="PackedScene" uid="uid://by8pqr474iaqj" path="res://scenes/robot/duckie_bot.tscn" id="9_5xmy2"]
 [ext_resource type="Script" uid="uid://frrhxfeqwt4d" path="res://scripts/path_follow_3d.gd" id="11_ucdee"]
 [ext_resource type="PackedScene" uid="uid://dsxbif155ikun" path="res://scenes/robot/duckie_bot_npc.tscn" id="12_3bncg"]
+[ext_resource type="PackedScene" path="res://scenes/objects/obj_tag_billboard.tscn" id="13_tagbb"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00074.png" id="14_tag74"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00400.png" id="15_tag400"]
+[ext_resource type="PackedScene" path="res://scenes/objects/obj_traffic_light.tscn" id="16_tlight"]
 
 [sub_resource type="Curve3D" id="Curve3D_xdp4q"]
 _data = {
@@ -296,6 +300,21 @@ transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 6.6,
 
 [node name="Sign_1_10" parent="Signs" unique_id=882736530 instance=ExtResource("8_tw3f0")]
 transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.6, 0.091, 6)
+
+[node name="Sign_stop_demo" parent="Signs" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0, 4.8)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Sign_tlight_ahead" parent="Signs" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.4, 0, 4.5)
+sign_texture = ExtResource("14_tag74")
+
+[node name="Sign_vehicle" parent="Signs" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.24, 0, 4.5)
+sign_texture = ExtResource("15_tag400")
+
+[node name="TrafficLight_demo" parent="." instance=ExtResource("16_tlight")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0, 3.9)
 
 [node name="DuckieBot" parent="." unique_id=865415826 instance=ExtResource("9_5xmy2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0.155, 6.3)
