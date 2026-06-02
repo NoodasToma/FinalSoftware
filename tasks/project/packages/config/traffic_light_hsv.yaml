@@ -1,0 +1,35 @@
+# HSV thresholds for the traffic-light detector.
+# OpenCV HSV ranges: H in [0, 179], S and V in [0, 255].
+# Red wraps around the hue circle, so it uses two ranges that share S/V bounds.
+# Tune these in lab lighting using the frames in notebooks/lights_samples/.
+
+# Red, low-hue side
+red_lower_h1: 0
+red_upper_h1: 10
+# Red, high-hue side (wraps past 180)
+red_lower_h2: 170
+red_upper_h2: 180
+# Shared red saturation / value
+red_lower_s: 120
+red_upper_s: 255
+red_lower_v: 80
+red_upper_v: 255
+
+# Yellow
+yellow_lower_h: 20
+yellow_upper_h: 35
+yellow_lower_s: 100
+yellow_upper_s: 255
+yellow_lower_v: 100
+yellow_upper_v: 255
+
+# Green
+green_lower_h: 40
+green_upper_h: 85
+green_lower_s: 80
+green_upper_s: 255
+green_lower_v: 60
+green_upper_v: 255
+
+# Minimum blob area (pixels) for a colour to count as a light.
+min_area: 80
