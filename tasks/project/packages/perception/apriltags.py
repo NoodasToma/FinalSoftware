@@ -44,14 +44,24 @@ def _try_load_intrinsics():
 
 class AprilTagDetector:
     def __init__(self, tag_size_m: float = 0.065) -> None:
-        import pupil_apriltags
-        self._det = pupil_apriltags.Detector(families="tag36h11")
         self._tag_size = tag_size_m
         self._intrinsics = _try_load_intrinsics()
         self._warned = False
+        # pupil_apriltags is a C-extension wheel; if it isn't installed for the
+        # running interpreter (e.g. a very new Python with no wheel yet),
+        # degrade gracefully to "no tags" instead of crashing the whole agent.
+        try:
+            import pupil_apriltags
+            self._det = pupil_apriltags.Detector(families="tag36h11")
+        except Exception as exc:
+            self._det = None
+            print(f"[AprilTagDetector] pupil_apriltags unavailable ({exc}); "
+                  f"tag detection disabled - detect() returns [].")
 
     def detect(self, bgr_frame: np.ndarray) -> list[TagObservation]:
         if bgr_frame is None or bgr_frame.size == 0:
+            return []
+        if self._det is None:
             return []
 
         if self._intrinsics is None and not self._warned:

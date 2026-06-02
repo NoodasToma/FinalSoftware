@@ -10,29 +10,14 @@ from typing import Optional
 import cv2
 import yaml
 
-try:
-    from tasks.project.packages.perception import (
-        TrafficLightDetector,
-        AprilTagDetector,
-        is_at_stop_line,
-        merge_turn_constraints,
-    )
-    from tasks.project.packages.sign_registry import lookup
-    from tasks.project.packages.precedence import we_go_first
-except ImportError:
-    # Mocks so this PR can land independently. C5 removes these.
-    class TrafficLightDetector:
-        def arm(self): pass
-        def disarm(self): pass
-        def detect(self, _): return None
-
-    class AprilTagDetector:
-        def detect(self, _): return []
-
-    def is_at_stop_line(_, __): return False
-    def merge_turn_constraints(_): return {'left', 'right', 'straight'}
-    def lookup(_): return None
-    def we_go_first(_, __): return True
+from tasks.project.packages.perception import (
+    TrafficLightDetector,
+    AprilTagDetector,
+    is_at_stop_line,
+    merge_turn_constraints,
+)
+from tasks.project.packages.sign_registry import lookup
+from tasks.project.packages.precedence import we_go_first
 
 from tasks.visual_lane_servoing.packages.agent import LaneServoingAgent
 from tasks.object_detection.packages.agent import ObjectDetectionAgent
