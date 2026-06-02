@@ -4,9 +4,9 @@ extends Node
 
 @export var host: String = "127.0.0.1"
 @export var target_fps: float = 30.0
-@export var resize_width: int = 1280
-@export var resize_height: int = 960
-@export var jpeg_quality: float = 0.85
+@export var resize_width: int = 0
+@export var resize_height: int = 0
+@export var jpeg_quality: float = 0.75
 
 var _tcp: StreamPeerTCP = StreamPeerTCP.new()
 var _accum: float = 0.0
