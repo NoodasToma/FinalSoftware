@@ -15,6 +15,7 @@
 [ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00074.png" id="14_tag74"]
 [ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00400.png" id="15_tag400"]
 [ext_resource type="PackedScene" path="res://scenes/objects/obj_traffic_light.tscn" id="16_tlight"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00008.png" id="17_tag8"]
 
 [sub_resource type="Curve3D" id="Curve3D_xdp4q"]
 _data = {
@@ -301,20 +302,20 @@ transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 6.6,
 [node name="Sign_1_10" parent="Signs" unique_id=882736530 instance=ExtResource("8_tw3f0")]
 transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.6, 0.091, 6)
 
-[node name="Sign_stop_demo" parent="Signs" instance=ExtResource("13_tagbb")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0, 4.8)
-sign_texture = ExtResource("7_xv6rw")
+[node name="Sign_4way_demo" parent="Signs" instance=ExtResource("13_tagbb")]
+transform = Transform3D(0.707, 0, -0.707, 0, 1, 0, 0.707, 0, 0.707, 5.35, 0, 4.6)
+sign_texture = ExtResource("17_tag8")
 
 [node name="Sign_tlight_ahead" parent="Signs" instance=ExtResource("13_tagbb")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.4, 0, 4.5)
+transform = Transform3D(0.707, 0, 0.707, 0, 1, 0, -0.707, 0, 0.707, 6.05, 0, 4.2)
 sign_texture = ExtResource("14_tag74")
 
 [node name="Sign_vehicle" parent="Signs" instance=ExtResource("13_tagbb")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.24, 0, 4.5)
+transform = Transform3D(0.707, 0, -0.707, 0, 1, 0, 0.707, 0, 0.707, 5.35, 0, 3.4)
 sign_texture = ExtResource("15_tag400")
 
 [node name="TrafficLight_demo" parent="." instance=ExtResource("16_tlight")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0, 3.9)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.05, 0, 3.0)
 
 [node name="DuckieBot" parent="." unique_id=865415826 instance=ExtResource("9_5xmy2")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.832, 0.155, 6.3)

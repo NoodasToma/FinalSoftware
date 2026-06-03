@@ -1,9 +1,7 @@
-# 0.50 -> the agent's `lane*current_speed*2` cruise multiplier is x1.0 (pass-through,
-# like the other servers). At 0.30 it was x0.6, crushing the command to a ~0.05 crawl.
-base_speed: 0.50
+base_speed: 0.5
 ramp_max_step: 0.05
+straight_speed: 0.3
+straight_ticks: 60
 turn_inner_speed: 0.05
 turn_outer_speed: 0.45
 turn_ticks: 90
-straight_speed: 0.30
-straight_ticks: 60
