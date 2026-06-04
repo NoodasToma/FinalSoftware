@@ -62,8 +62,17 @@ class LaneServoingAgent:
         self.steering_threshold  = cfg.get('steering_threshold',  0.2)
         self.curve_boost         = cfg.get('curve_boost',         1.3)
         self.detection_threshold = cfg.get('detection_threshold', 500)
+        # Lane-loss recovery: dead-stopping freezes forever (a stopped bot's
+        # view never changes, so the lane can't reappear), but a hard pivot can
+        # spin in a circle if the lane is truly gone. So recover in two bounded
+        # phases (see _motor_commands): a brief GENTLE sweep toward the last-seen
+        # lane side, then straight creep — never a tight in-place spin.
+        self.recovery_speed      = cfg.get('recovery_speed',      0.15)
+        self.recovery_turn       = cfg.get('recovery_turn',       0.08)
+        self.recovery_max_frames = int(cfg.get('recovery_max_frames', 12))
 
         self.frame_count        = 0
+        self._recovery_frames   = 0
         self._prev_error        = 0.0
         self._filtered_error    = 0.0
         self._lane_half_width   = float(_LINE_OFFSET)
@@ -96,8 +105,24 @@ class LaneServoingAgent:
 
     def _motor_commands(self, steering: float, recovery: bool, is_curve: bool, both_visible: bool):
         if recovery:
-            return 0.0, 0.0
+            # Lane lost. Two bounded phases, so we neither freeze nor spin:
+            #  1) for the first recovery_max_frames, GENTLY steer toward the side
+            #     the lane was last seen (sign of _prev_error; >0 => lane was
+            #     left) while creeping, so the camera sweeps back over it;
+            #  2) after that, go STRAIGHT and keep creeping — translating to
+            #     re-find the lane instead of circling in place.
+            # The turn is deliberately gentle (recovery_turn ~0.08) so even the
+            # sweep phase is a wide arc, never a tight pivot.
+            self._recovery_frames += 1
+            if self._recovery_frames <= self.recovery_max_frames:
+                turn = self.recovery_turn if self._prev_error >= 0 else -self.recovery_turn
+            else:
+                turn = 0.0
+            left  = self.recovery_speed - turn
+            right = self.recovery_speed + turn
+            return float(np.clip(left, 0.0, 1.0)), float(np.clip(right, 0.0, 1.0))
 
+        self._recovery_frames = 0
         speed = self.curve_speed if is_curve else self.base_speed
         
         if not both_visible:
@@ -163,7 +188,7 @@ class LaneServoingAgent:
         is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)
 
         raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
-        self._filtered_error = 0.7 * self._filtered_error + 0.3 * raw_error
+        self._filtered_error = 0.5 * self._filtered_error + 0.5 * raw_error
         steering             = self._calculate_steering(self._filtered_error)
         left, right          = self._motor_commands(steering, recovery, is_curve, both_visible)
         left, right          = self._smooth(left, right, both_visible)

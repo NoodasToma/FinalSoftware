@@ -43,9 +43,15 @@ def _try_load_intrinsics():
 
 
 class AprilTagDetector:
-    def __init__(self, tag_size_m: float = 0.065) -> None:
+    def __init__(self, tag_size_m: float = 0.065, intrinsics=None) -> None:
         self._tag_size = tag_size_m
-        self._intrinsics = _try_load_intrinsics()
+        # `intrinsics`, when given, is an (fx, fy, cx, cy) tuple used directly
+        # (skipping the file search). The sim passes its own camera intrinsics
+        # this way so est_distance_m is real and the bot takes the SAME
+        # est_distance-based stop-line path as hardware. Default None reproduces
+        # the original behaviour exactly: search the camera-config files (the
+        # real bot finds its calibration; the sim, lacking one, gets inf).
+        self._intrinsics = intrinsics if intrinsics is not None else _try_load_intrinsics()
         self._warned = False
         # pupil_apriltags is a C-extension wheel; if it isn't installed for the
         # running interpreter (e.g. a very new Python with no wheel yet),

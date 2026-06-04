@@ -175,6 +175,14 @@ func _process(_delta: float) -> void:
 				print("[WheelServer] Changing scene to: ", scene_path)
 				get_tree().change_scene_to_file.call_deferred(scene_path)
 
+		elif msg_type == "teleport":
+			var robot = get_parent()
+			if robot and robot.has_method("teleport"):
+				robot.teleport(float(d.get("x", 0.0)), float(d.get("z", 0.0)),
+					float(d.get("heading", 0.0)))
+				left_cmd = 0.0
+				right_cmd = 0.0
+
 		elif msg_type == "get_state":
 			# Send current game state to Python
 			_send_state()

@@ -1,0 +1,24 @@
+# REAL-BOT lane-servoing config — used ONLY by real_server.py (passed to the
+# agent as lane_config_path; the sim keeps lane_servoing_config.yaml, which
+# holds the sim-verified gains).
+#
+# STARTING POINTS for hardware, deliberately gentler than the sim values:
+# a real camera + real motor dynamics oscillate at gains that are stable in
+# the simulator. Tune ON THE BOT, in this order (BOT_BEHAVIOR.md §1b):
+#   1. lane HSV (config/lane_servoing_hsv_config.yaml) until masks are clean;
+#   2. raise p_gain until the bot tracks the center without weaving
+#      (typical landing zone 0.2-0.5);
+#   3. add d_gain only if it overshoots on entry to curves (0.05-0.2);
+#   4. raise base_speed last.
+base_speed: 0.3
+p_gain: 0.25
+d_gain: 0.1
+max_steer: 0.45
+detection_threshold: 150
+recovery_speed: 0.18
+recovery_turn: 0.08
+recovery_max_frames: 12
+curve_boost: 1.8
+curve_speed: 0.1
+curve_threshold: 400
+steering_threshold: 0.15

@@ -1,0 +1,35 @@
+# REAL-BOT overlay for maneuver_timings.yaml — applied ONLY by real_server.py
+# (merged over the base file at startup; the sim never reads this file).
+#
+# Why these differ from the base (sim-verified) values:
+#
+# 1) pwm_min ratio compression. The real DaguWheelsDriver maps a wheel command
+#    v to PWM = v*195 + 60 (pwm_min=60 overcomes motor stiction; the sim runs
+#    pwm_min=0 so command == speed). That +60 floor COMPRESSES speed ratios
+#    toward 1: the sim's turn pair 0.36/0.45 becomes PWM 130/147 (ratio 0.88,
+#    not 0.80) -> the arc would be far wider on hardware. The inner speeds
+#    below are recomputed so the PWM ratio equals the sim-verified physical
+#    ratio (right arc ratio 0.80 -> inner 0.30; left 0.867 -> inner 0.35).
+#
+# 2) Real tile size. Duckietown tiles are 0.585 m (the sim track used 0.6 m),
+#    so tick counts scale by 0.975.
+#
+# These are PRINCIPLED STARTING POINTS, not final values: DC motors are not
+# linear in PWM near the stiction floor, and wheels slip. Calibrate on the bot
+# with the one-trial procedure in tasks/project/BOT_BEHAVIOR.md §1b:
+#   measure the turn angle theta  ->  new_ticks = ticks * (90 / theta)
+#   arc too wide -> lower the inner speed a little; too tight -> raise it.
+#
+# (Anything not listed here keeps its base value: stop_wait_seconds,
+#  stop/react distances, sign_cooldown, red-line knobs, etc. are
+#  platform-independent behaviour, not platform calibration.)
+
+turn_right_inner_speed: 0.30
+turn_right_outer_speed: 0.45
+turn_right_ticks: 517
+
+turn_left_inner_speed: 0.35
+turn_left_outer_speed: 0.45
+turn_left_ticks: 829
+
+straight_ticks: 758

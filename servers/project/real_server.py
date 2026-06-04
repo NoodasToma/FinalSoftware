@@ -11,6 +11,7 @@ sys.path.insert(0, project_root)
 from flask import Flask, Response, jsonify
 import numpy as np
 import cv2
+import yaml
 
 from duckiebot.camera_driver import CameraDriver
 from duckiebot.wheel_driver import DaguWheelsDriver
@@ -20,6 +21,35 @@ from launcher.ports import find_available_port
 from servers.common import make_frame_generator, shutdown_cleanup, suppress_http_logs
 
 import tasks.project.packages.agent as agent
+
+# ---------------------------------------------------------------- bot configs
+# The base YAMLs hold the SIM-verified values (the behaviour suite runs against
+# them). The real robot is NOT the sim — in particular DaguWheelsDriver uses
+# pwm_min=60 (stiction floor), which compresses wheel-speed ratios and would
+# make the sim's turn arcs far wider on hardware — so the hardware starting
+# values live in small *_bot.yaml overlays that only this server applies.
+_PKG_CONFIG = os.path.join(project_root, 'tasks', 'project', 'packages', 'config')
+
+
+def _load_bot_timings():
+    """maneuver_timings.yaml merged with maneuver_timings_bot.yaml (if present)."""
+    with open(os.path.join(_PKG_CONFIG, 'maneuver_timings.yaml')) as fh:
+        timings = yaml.safe_load(fh) or {}
+    overlay_path = os.path.join(_PKG_CONFIG, 'maneuver_timings_bot.yaml')
+    overlay = {}
+    try:
+        with open(overlay_path) as fh:
+            overlay = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        pass
+    timings.update(overlay)
+    return timings, sorted(overlay)
+
+
+def _bot_lane_config_path():
+    """config/lane_servoing_config_bot.yaml if it exists, else None (default)."""
+    path = os.path.join(project_root, 'config', 'lane_servoing_config_bot.yaml')
+    return path if os.path.isfile(path) else None
 
 app        = Flask(__name__)
 camera     = None
@@ -83,10 +113,15 @@ def main():
     print('  Camera: ok')
 
     print('\n[4/4] Starting agent...')
+    timings, overlay_keys = _load_bot_timings()
+    lane_cfg = _bot_lane_config_path()
+    print(f"  bot timing overrides: {overlay_keys or 'none'}")
+    print(f"  bot lane config: {lane_cfg or 'default (sim-tuned!)'}")
     stop_event.clear()
     threading.Thread(
         target=agent.main,
         args=(camera, wheels, leds, stop_event),
+        kwargs=dict(timings_override=timings, lane_config_path=lane_cfg),
         daemon=True,
         name='AgentThread',
     ).start()

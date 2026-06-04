@@ -85,6 +85,11 @@ class TrafficLightDetector:
         """Turn detection off (saves CPU); detect() then always returns None."""
         self._armed = False
 
+    @property
+    def armed(self) -> bool:
+        """Whether detection is currently armed (read-only; for telemetry)."""
+        return self._armed
+
     def _color_mask(self, hsv, ranges) -> np.ndarray:
         """Union the (lower, upper) ranges for a colour, then morph-open (3x3)."""
         mask = None

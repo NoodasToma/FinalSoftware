@@ -39,6 +39,95 @@ class GameState:
     distance_traveled: float = 0.0
     distance_from_start: float = 0.0
     collision_duck: str = ""
+    # Sim pose telemetry (from Godot get_state); used by test harnesses to
+    # measure turn angles / track the route. Not present on real hardware.
+    heading_deg: float = 0.0
+    pos_x: float = 0.0
+    pos_z: float = 0.0
+
+
+# --- Simulated wheel encoders -------------------------------------------------
+# The real Duckiebot (DaguWheelsDriver) has Hall-effect wheel encoders that
+# maneuvers.py uses to time turns/straights by *distance* (ticks) rather than by
+# wall-clock seconds. Tick-based motion is geometry-faithful: a turn that
+# advances the OUTER wheel by N ticks rotates the bot by the same angle on any
+# platform with the same baseline + inner/outer speed ratio — independent of the
+# PWM->speed mapping. The Godot bot has no real encoders, so we model them here
+# from the EXECUTED wheel command, making the SIM take the SAME tick-based code
+# path as hardware (maneuvers._await_motion's encoder branch). This is the whole
+# point of the fidelity rebuild: a turn calibrated to 90 deg in sim is ~90 deg on
+# the bot (same geometry), modulo real wheel slip.
+#
+# Spec mirrors duckiebot/encoder_driver/encoder_driver.py exactly:
+_TICKS_PER_REV = 135                                  # Hall pulses per wheel rev (DB21J)
+_WHEEL_RADIUS_M = 0.0318                              # m
+_TICKS_PER_M = _TICKS_PER_REV / (2.0 * pi * _WHEEL_RADIUS_M)   # ~675.6 ticks / m of wheel travel
+_SIM_MAX_SPEED_MPS = 1.0                              # matches Moveee.gd `max_speed` (cmd -> m/s)
+
+
+class SimWheelEncoder:
+    """Models one Hall-effect wheel encoder for the Godot bot.
+
+    Counts ticks by integrating the *executed* wheel command (in [-1, 1]) over
+    wall-clock time: ticks += executed * max_speed * dt * ticks_per_metre. Godot
+    drives the wheel at v = executed * max_speed (Moveee.gd), so the integrated
+    distance equals the simulated wheel travel and the tick count matches what a
+    real 135-tick/rev encoder would report for the same motion. Lazy integration
+    (advanced on every read and on every speed change) — no background thread.
+    Sign is carried by the executed command, so reverse decrements ticks, exactly
+    like the real (direction-aware) encoder.
+    """
+
+    def __init__(self) -> None:
+        self._executed: float = 0.0
+        self._accum: float = 0.0           # fractional ticks, kept as float to avoid drift
+        self._last_t: float = time.time()
+        self._lock = threading.Lock()
+
+    def _advance(self, now: float) -> None:
+        dt = now - self._last_t
+        if dt > 0.0:
+            self._accum += self._executed * _SIM_MAX_SPEED_MPS * dt * _TICKS_PER_M
+            self._last_t = now
+
+    def set_executed(self, executed: float) -> None:
+        """Bank ticks accrued at the OLD speed, then switch to the new speed."""
+        with self._lock:
+            self._advance(time.time())
+            self._executed = float(executed)
+
+    @property
+    def ticks(self) -> int:
+        with self._lock:
+            self._advance(time.time())
+            return int(self._accum)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._accum = 0.0
+            self._last_t = time.time()
+
+
+class SimWheelEncoderPair:
+    """Both simulated encoders; mirrors encoder_driver.WheelEncoderPair so
+    maneuvers.py's `wheels.encoders.left/right.ticks` works unchanged in sim."""
+
+    def __init__(self) -> None:
+        self.left = SimWheelEncoder()
+        self.right = SimWheelEncoder()
+
+    def update(self, left_executed: float, right_executed: float) -> None:
+        self.left.set_executed(left_executed)
+        self.right.set_executed(right_executed)
+
+    def set_directions(self, left_forward: bool, right_forward: bool) -> None:
+        # No-op: our .ticks already carries sign from the executed command.
+        # Present only for interface parity with the real WheelEncoderPair.
+        pass
+
+    def reset(self) -> None:
+        self.left.reset()
+        self.right.reset()
 
 
 class GodotWheelTransport:
@@ -157,6 +246,9 @@ class GodotWheelTransport:
                     distance_traveled=float(msg.get("total_distance", 0)),
                     distance_from_start=float(msg.get("distance_from_start", 0)),
                     collision_duck=str(msg.get("collision_duck", "")),
+                    heading_deg=float(msg.get("heading_deg", 0.0)),
+                    pos_x=float(msg.get("pos_x", 0.0)),
+                    pos_z=float(msg.get("pos_z", 0.0)),
                 )
 
         except Exception as e:
@@ -195,6 +287,35 @@ class GodotWheelTransport:
             print("[GodotWheelTransport] Sent reset command")
         except Exception as e:
             print(f"[GodotWheelTransport] Reset send failed: {e}")
+            self.close()
+
+    def send_teleport(self, x: float, z: float, heading_deg: float) -> None:
+        if not self._ensure_connected():
+            return
+        msg = {"type": "teleport", "x": float(x), "z": float(z), "heading": float(heading_deg)}
+        payload = json.dumps(msg).encode("utf-8")
+        header = struct.pack("!I", len(payload))
+        try:
+            assert self._sock is not None
+            self._sock.sendall(header + payload)
+        except Exception as e:
+            print(f"[GodotWheelTransport] Teleport send failed: {e}")
+            self.close()
+
+    def send_get_state(self) -> None:
+        """Ask Godot to reply with a 'state' message (pose + game state). The
+        reply is parsed asynchronously by _check_incoming into self.game_state."""
+        self._check_incoming()
+        if not self._ensure_connected():
+            return
+        msg = {"type": "get_state"}
+        payload = json.dumps(msg).encode("utf-8")
+        header = struct.pack("!I", len(payload))
+        try:
+            assert self._sock is not None
+            self._sock.sendall(header + payload)
+        except Exception as e:
+            print(f"[GodotWheelTransport] get_state send failed: {e}")
             self.close()
 
     def send_remove_objects(self, name_filter: str) -> None:
@@ -264,7 +385,10 @@ class GodotWheelsDriver(WheelsDriverAbs):
 
         self._executed_left: float1 = 0.0
         self._executed_right: float1 = 0.0
-        self.encoders = None  # no GPIO encoders in sim; agent uses game_state.distance_traveled
+        # Sim encoders: model the real DB21J encoders so maneuvers.py uses the
+        # SAME distance(tick)-based turn/straight path as hardware (see classes
+        # above). Real bot uses DaguWheelsDriver -> real WheelEncoderPair instead.
+        self.encoders = SimWheelEncoderPair()
         self.set_wheels_speed(0.0, 0.0)
 
     @property
@@ -288,6 +412,18 @@ class GodotWheelsDriver(WheelsDriverAbs):
 
     def remove_objects(self, name_filter: str) -> None:
         self.transport.send_remove_objects(name_filter)
+
+    def teleport(self, x: float, z: float, heading_deg: float) -> None:
+        self.transport.send_teleport(x, z, heading_deg)
+
+    def poll_state(self) -> tuple:
+        """Sim-only: request + return the latest (heading_deg, pos_x, pos_z) from
+        Godot. The reply may lag by one poll (parsed on the next _check_incoming),
+        which is fine for telemetry/logging. The real robot has no equivalent."""
+        self.transport.send_get_state()
+        self.transport._check_incoming()
+        gs = self.transport.game_state
+        return (gs.heading_deg, gs.pos_x, gs.pos_z)
 
     def change_scene(self, scene_path: str) -> None:
         self.transport.send_change_scene(scene_path)
@@ -328,6 +464,10 @@ class GodotWheelsDriver(WheelsDriverAbs):
         # executed PWM in [-1, 1]
         self._executed_left = (pwml * leftMotorMode.value) / 255.0
         self._executed_right = (pwmr * rightMotorMode.value) / 255.0
+
+        # Advance the simulated encoders with exactly what Godot will execute, so
+        # encoder odometry == simulated wheel travel (drives tick-based maneuvers).
+        self.encoders.update(self._executed_left, self._executed_right)
 
         if not self.pretend:
             self.transport.send_wheels(self._executed_left, self._executed_right)

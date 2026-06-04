@@ -16,6 +16,7 @@ class State(Enum):
 
 TRANSITIONS: dict[tuple[State, str], State] = {
     (State.DRIVE,            'see_stop_or_yield'):  State.APPROACH,
+    (State.DRIVE,            'see_light'):          State.APPROACH,
     (State.DRIVE,            'obstacle'):           State.SOFT_STOP,
     (State.APPROACH,         'at_stop_line'):       State.STOPPED,
     (State.APPROACH,         'obstacle'):           State.SOFT_STOP,

@@ -8,7 +8,15 @@ texture_filter = 0
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_fdedm"]
 material = SubResource("StandardMaterial3D_11b3j")
-size = Vector2(0.07, 0.07)
+size = Vector2(0.13, 0.13)
+
+[sub_resource type="StandardMaterial3D" id="WhiteQuiet"]
+shading_mode = 0
+albedo_color = Color(1, 1, 1, 1)
+
+[sub_resource type="BoxMesh" id="BoxBacking"]
+material = SubResource("WhiteQuiet")
+size = Vector3(0.16, 0.16, 0.004)
 
 [sub_resource type="BoxMesh" id="BoxMesh_ujw2r"]
 size = Vector3(0.08, 0.155, 0.001)
@@ -19,10 +27,14 @@ script = ExtResource("1_11b3j")
 [node name="Sign" parent="." unique_id=1400785124 instance=ExtResource("1_stop")]
 transform = Transform3D(0.6, 0, 0, 0, 0.6, 0, 0, 0, 0.6, 0, 0, 0)
 
-[node name="texture" type="MeshInstance3D" parent="." unique_id=307105233]
-transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0, 0.10689279, 0.003327623)
-mesh = SubResource("PlaneMesh_fdedm")
-
 [node name="panel" type="MeshInstance3D" parent="." unique_id=419437448]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.14867032, 0.0026887022)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0.0026887022)
 mesh = SubResource("BoxMesh_ujw2r")
+
+[node name="backing" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.11, 0.0)
+mesh = SubResource("BoxBacking")
+
+[node name="texture" type="MeshInstance3D" parent="." unique_id=307105233]
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0, 0.11, 0.006)
+mesh = SubResource("PlaneMesh_fdedm")

@@ -51,6 +51,18 @@ func current_color() -> Color:
 		return C_GREEN
 	return C_YELLOW
 
+# Ground-truth colour NAME ("red"/"green"/"yellow") for test harnesses.
+func current_color_name() -> String:
+	var cycle: float = red_seconds + green_seconds + yellow_seconds
+	if cycle <= 0.0:
+		return "red"
+	var p: float = fmod(_t, cycle)
+	if p < red_seconds:
+		return "red"
+	elif p < red_seconds + green_seconds:
+		return "green"
+	return "yellow"
+
 func _apply() -> void:
 	if _mat != null:
 		_mat.albedo_color = current_color()

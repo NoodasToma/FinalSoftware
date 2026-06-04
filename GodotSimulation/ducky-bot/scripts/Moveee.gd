@@ -130,8 +130,27 @@ func get_game_state() -> Dictionary:
 		"survival_time": Time.get_unix_time_from_system() - start_time,
 		"total_distance": total_distance,
 		"distance_from_start": start_position.distance_to(global_position),
-		"collision_duck": collision_duck_name
+		"collision_duck": collision_duck_name,
+		# Pose, for test harnesses to MEASURE turn angle / track the route.
+		# (Sim-only telemetry; the real robot has no equivalent and does not
+		# use this script — the agent never reads it, so hardware is unaffected.)
+		"heading_deg": rad_to_deg(rotation.y),
+		"pos_x": global_position.x,
+		"pos_z": global_position.z
 	}
+
+func teleport(x: float, z: float, heading_deg: float) -> void:
+	# Place the bot at a world (x,z) with a yaw heading, for deterministic
+	# scenario tests (drive it straight to a stop sign / light / duckie / vehicle
+	# and observe the REAL agent react). Sim-only test hook.
+	global_position = Vector3(x, initial_position.y, z)
+	rotation = Vector3(initial_rotation.x, deg_to_rad(heading_deg), initial_rotation.z)
+	velocity = Vector3.ZERO
+	game_over = false
+	collision_duck_name = ""
+	start_position = global_position
+	last_position = global_position
+	print("[Robot] Teleported to (", x, ",", z, ") heading=", heading_deg, " deg")
 
 func reset_game() -> void:
 	global_position = initial_position

@@ -1,9 +1,12 @@
-base_speed: 0.5
+base_speed: 0.25
 curve_boost: 1.8
 curve_speed: 0.1
 curve_threshold: 400
-d_gain: 0.12
+d_gain: 0.15
 detection_threshold: 100
 max_steer: 0.55
-p_gain: 0.12
+p_gain: 0.45
+recovery_max_frames: 12
+recovery_speed: 0.15
+recovery_turn: 0.08
 steering_threshold: 0.15

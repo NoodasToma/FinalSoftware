@@ -8,14 +8,14 @@ albedo_color = Color(1, 1, 1, 1)
 
 [sub_resource type="BoxMesh" id="BackMesh"]
 material = SubResource("WhiteMat")
-size = Vector3(0.56, 0.56, 0.02)
+size = Vector3(0.16, 0.16, 0.01)
 
 [sub_resource type="StandardMaterial3D" id="TagMat"]
 texture_filter = 0
 
 [sub_resource type="PlaneMesh" id="TagPlane"]
 material = SubResource("TagMat")
-size = Vector2(0.4, 0.4)
+size = Vector2(0.13, 0.13)
 
 [sub_resource type="StandardMaterial3D" id="PostMat"]
 shading_mode = 0
@@ -23,19 +23,19 @@ albedo_color = Color(0.08, 0.08, 0.09, 1)
 
 [sub_resource type="BoxMesh" id="PostMesh"]
 material = SubResource("PostMat")
-size = Vector3(0.03, 0.30, 0.03)
+size = Vector3(0.02, 0.14, 0.02)
 
 [node name="ObjTagBillboard" type="Node3D"]
 script = ExtResource("1_tagbb")
 
 [node name="Post" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.15, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.07, 0)
 mesh = SubResource("PostMesh")
 
 [node name="back" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.32, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.21, 0)
 mesh = SubResource("BackMesh")
 
 [node name="texture" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0, 0.32, 0.03)
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0, 0.21, 0.015)
 mesh = SubResource("TagPlane")

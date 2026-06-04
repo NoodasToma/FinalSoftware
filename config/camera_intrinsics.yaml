@@ -1,0 +1,27 @@
+# Real-bot camera intrinsics for AprilTag distance estimation.
+#
+# WHILE THIS FILE IS ALL COMMENTS the bot runs in "uncalibrated" mode, which is
+# SAFE and READY: it reacts to signs on sight (a real camera decodes the 6.5 cm
+# tags at ~0.5-0.8 m anyway) and stops on the painted red line (the primary
+# trigger) with the pixel-size proxy as backup. Filling this in upgrades the
+# bot to metric distances: react/arm gates at sign_react_distance_m, and the
+# est_distance < stop_distance_m backup stop.
+#
+# How to measure (no checkerboard needed — one tag and a tape measure):
+#   1. Start the task on the bot:  python launch.py --run --bot <name> --task project
+#   2. Stand a printed 6.5 cm AprilTag exactly 0.50 m in front of the camera.
+#   3. From the laptop:
+#        .venv311\Scripts\python.exe tasks\project\sim_tests\calibrate_real_bot.py `
+#            --url http://<name>.local:5000/video --measure-fx --distance 0.50
+#      It prints the fx/fy/cx/cy block — paste it below (uncomment).
+#   4. Verify at 2-3 other distances with --verify --distance <D>.
+#
+# This file IS deployed to the bot by `launch.py --run` (it lives in config/),
+# and tasks/project/packages/perception/apriltags.py searches it second, after
+# duckiebot/camera_driver/config/camera_config.yaml (which is NOT deployed).
+#
+# intrinsics:
+#   fx: 310.0
+#   fy: 310.0
+#   cx: 320.0
+#   cy: 240.0
