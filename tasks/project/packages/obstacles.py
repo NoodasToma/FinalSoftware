@@ -1,4 +1,4 @@
-from __future__ import annotations
+from typing import Tuple
 
 _DUCKIE_CLASS = 0
 _FRAME_W = 640
@@ -6,7 +6,7 @@ _BOTTOM_FRACTION = 0.6
 _AREA_FRACTION = 0.04
 
 
-def should_stop_for_obstacle(detections, frame_h: int) -> tuple[bool, str]:
+def should_stop_for_obstacle(detections, frame_h: int) -> Tuple[bool, str]:
     """detections: list of ((x1,y1,x2,y2), score, class_id) from
     ObjectDetectionAgent.detect(). Stop if any duckie (class 0) has
     y2 > 0.6*frame_h OR bbox area > 0.04 * (640*frame_h).

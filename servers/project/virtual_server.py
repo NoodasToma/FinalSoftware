@@ -18,6 +18,7 @@ import signal
 import threading
 import time
 import argparse
+from collections import deque
 
 script_dir   = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(script_dir, '..', '..')
@@ -43,6 +44,7 @@ from tasks.project.packages.precedence import we_go_first
 from tasks.project.sim_tests.sim_telemetry import (
     TelemetryLogger, sim_fidelity_kwargs, SIM_APRILTAG_INTRINSICS, SIM_TAG_SIZE_M,
 )
+from tasks.project.sim_tests import course_map
 from tasks.visual_lane_servoing.packages.agent import LaneServoingAgent
 from tasks.visual_lane_servoing.packages import visual_servoing_activity as lane_hsv
 from tasks.object_detection.packages.agent import ObjectDetectionAgent, CLASS_NAMES, CLASS_COLORS
@@ -56,6 +58,69 @@ leds       = None
 _agent_stop   = threading.Event()
 _agent_thread = None
 _telemetry    = None   # live TelemetryLogger (observer for the running agent)
+
+
+class LogBuffer:
+    """Ring buffer of human-readable detection/decision events derived from the
+    agent's per-loop observer snapshots, for the dashboard 'Detection log'."""
+
+    def __init__(self, maxlen=500):
+        self._buf = deque(maxlen=maxlen)
+        self._id = 0
+        self._prev = {}
+        self._lock = threading.Lock()
+
+    def _add(self, typ, msg, t):
+        with self._lock:
+            self._id += 1
+            self._buf.append({'id': self._id, 't': round(float(t), 2), 'type': typ, 'msg': msg})
+
+    def feed(self, snap):
+        t = snap.get('t', time.time())
+        st, ev = snap.get('state'), snap.get('event')
+        p = self._prev
+        if st != p.get('state'):
+            self._add('state', f"{p.get('state', '-')} -> {st}" + (f"  (via {ev})" if ev else ''), t)
+        cur = {tg['id']: tg for tg in snap.get('tags', [])}
+        for tid, tg in cur.items():
+            if tid not in p.get('tags', set()):
+                d = tg.get('est_distance_m')
+                self._add('sign', f"tag {tid} = {tg.get('meaning')}" + (f" @ {d:.2f}m" if d else ''), t)
+        lc = (snap.get('light') or {}).get('color')
+        if lc != p.get('light') and lc:
+            self._add('light', f"traffic light = {lc}", t)
+        if snap.get('red_line') and not p.get('red_line'):
+            self._add('redline', "red stop line reached", t)
+        if snap.get('obstacle_stop') and not p.get('obstacle'):
+            self._add('obstacle', "duckie in path -> soft stop", t)
+        lt = snap.get('legal_turns')
+        if lt is not None and lt != p.get('legal'):
+            self._add('decision', "legal turns = " + (', '.join(lt) if lt else 'NONE (do-not-enter)'), t)
+        self._prev = {'state': st, 'tags': set(cur), 'light': lc,
+                      'red_line': snap.get('red_line'), 'obstacle': snap.get('obstacle_stop'), 'legal': lt}
+
+    def since(self, last_id):
+        with self._lock:
+            return [e for e in self._buf if e['id'] > int(last_id)]
+
+
+_log = LogBuffer()
+# In-page test runner state (course_suite over the already-running Godot).
+_test = {'running': False, 'current': '', 'results': [], 'passed': 0, 'total': 0}
+
+
+def _observe(snap):
+    """Composite observer: feed the live TelemetryLogger AND the detection log."""
+    t = _telemetry
+    if t is not None:
+        try:
+            t(snap)
+        except Exception:
+            pass
+    try:
+        _log.feed(snap)
+    except Exception:
+        pass
 
 # Manual-drive state. While manual mode is on the agent thread is paused and the
 # wheels are driven only by /drive commands. A watchdog zeros the wheels if no
@@ -290,7 +355,7 @@ def _start_agent():
                                  wheels=wheels, label='live', keep_records=False)
     _agent_thread = threading.Thread(
         target=agent.main, args=(camera, wheels, leds, _agent_stop),
-        kwargs=dict(observer=_telemetry, **sim_fidelity_kwargs()),
+        kwargs=dict(observer=_observe, **sim_fidelity_kwargs()),
         daemon=True, name='AgentThread')
     _agent_thread.start()
 
@@ -420,6 +485,40 @@ def _run_demo():
         _start_agent()
 
 
+def _run_tests(only=None):
+    """Run the course_suite assertions over the ALREADY-RUNNING Godot: stop the
+    live agent, teleport to each station, run the real agent, assert, restart.
+    `only` = a single station name (per-sign), else every station."""
+    global _test
+    from tasks.project.sim_tests import course_suite as cs
+    if only:
+        stations = [course_map.station(only)]
+    else:
+        stations = list(course_map.STATIONS)
+    stations = [s for s in stations if s]
+    _test = {'running': True, 'current': 'starting', 'results': [], 'passed': 0,
+             'total': len(stations)}
+    _stop_agent()
+    try:
+        for st in stations:
+            _test['current'] = st['label']
+            summ, records, transitions = cs.run_station(camera, wheels, st)
+            label, ok, detail = cs.check_station(st, summ, records, transitions)
+            _test['results'].append({'name': label, 'pass': bool(ok), 'detail': detail})
+            _test['passed'] = sum(1 for r in _test['results'] if r['pass'])
+    except Exception as e:
+        _test['results'].append({'name': 'runner error', 'pass': False, 'detail': str(e)})
+    finally:
+        _test['current'] = 'done'
+        _test['running'] = False
+        try:
+            wheels.reset_game()
+        except Exception:
+            pass
+        time.sleep(0.3)
+        _start_agent()
+
+
 def _set_manual(on: bool) -> None:
     """Enter/leave manual drive. Entering pauses the agent; leaving resumes it."""
     with _manual_lock:
@@ -538,16 +637,44 @@ def telemetry():
     return jsonify((_telemetry.latest if _telemetry else None) or {})
 
 
+@app.route('/log', methods=['GET'])
+def get_log():
+    """Detection/decision events since ?since=<id> (scrolling detection log)."""
+    return jsonify(_log.since(request.args.get('since', 0)))
+
+
+@app.route('/scenarios', methods=['GET'])
+def scenarios_list():
+    """Every testable station, for the per-sign jump buttons."""
+    return jsonify([{'name': s['name'], 'label': s['label'], 'kind': s['kind']}
+                    for s in course_map.STATIONS])
+
+
+@app.route('/test/run', methods=['POST'])
+def test_run():
+    """Start the in-page test runner. body {mode:'all'|'sign', name?}."""
+    if _test['running']:
+        return jsonify({'status': 'busy'})
+    data = request.get_json(silent=True) or {}
+    only = data.get('name') if data.get('mode') == 'sign' else None
+    with _manual_lock:
+        _manual['on'] = False
+    threading.Thread(target=_run_tests, kwargs={'only': only},
+                     daemon=True, name='CourseTests').start()
+    return jsonify({'status': 'started', 'only': only})
+
+
+@app.route('/test/status', methods=['GET'])
+def test_status():
+    return jsonify(_test)
+
+
 # Watch-one-behaviour teleports: park the bot at the start of a scenario and let
 # the (restarted) REAL agent do its thing while you watch /video + the live
-# status panel. Coordinates match tasks/project/sim_tests/behaviour_suite.py.
-SCENARIOS = {
-    'lane':     (0.9,  5.1,   0.0, 'lane-follow the west straight'),
-    'stop':     (5.85, 7.05,  0.0, 'stop sign @ 4-way: red line → full stop → car turn'),
-    'light':    (5.85, 4.45,  0.0, 'traffic light: arm → stop at line → go on green'),
-    'obstacle': (4.5,  1.632, 270.0, 'duckie in the lane → SOFT_STOP until cleared'),
-    'robot':    (5.85, 4.85,  0.0, 'parked Duckiebot with vehicle plate → precedence'),
-}
+# status panel. Generated from course_map.STATIONS so EVERY sign has a jump
+# button (one source of truth, shared with course_suite.py).
+SCENARIOS = {s['name']: (s['teleport'][0], s['teleport'][1], s['teleport'][2], s['label'])
+             for s in course_map.STATIONS}
 
 
 @app.route('/scenario/<name>', methods=['POST'])
@@ -715,24 +842,23 @@ _PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Duckiebot Sim
       <div id="status" style="font-size:14px;line-height:1.7">waiting for telemetry…</div>
     </div>
     <div class="card"><h2>Watch a behaviour (teleports the bot, agent stays on)</h2>
-      <div class="bar" style="flex-wrap:wrap">
-        <button class="alt" onclick="scenario('lane')">Lane follow</button>
-        <button class="alt" onclick="scenario('stop')">Stop sign + turn</button>
-        <button class="alt" onclick="scenario('light')">Traffic light</button>
-        <button class="alt" onclick="scenario('obstacle')">Duckie obstacle</button>
-        <button class="alt" onclick="scenario('robot')">Other robot</button>
-        <span id="scmsg"></span>
-      </div>
+      <div id="scbtns" class="bar" style="flex-wrap:wrap"></div>
+      <div class="bar"><span id="scmsg"></span></div>
       <div class="legend">Each button parks the bot at a scenario start and restarts the agent —
       watch the camera + status above. Stop sign: approaches the 4-way, halts at the <b>red line</b>,
       waits, then makes a gradual car-like turn.</div>
     </div>
-    <div class="card"><h2>Task 2 &amp; 3 demo</h2>
+    <div class="card"><h2>Sign / light / object tests (in-page runner)</h2>
       <div class="bar">
-        <button onclick="runDemo()">▶ Run task demo</button>
-        <span id="demostat">drives the bot through each rubric scenario, live</span>
+        <button onclick="runTests()">▶ Run all tests</button>
+        <span id="teststat">runs every sign + light + object check live in this sim (~3 min)</span>
       </div>
-      <div id="demores" class="legend"></div>
+      <div id="testres" class="legend"></div>
+    </div>
+    <div class="card"><h2>Detection log (what the bot's functions report)</h2>
+      <pre id="logbox" style="height:200px;overflow:auto;background:#0e1014;border:1px solid #2a2d34;border-radius:6px;padding:8px;font-size:12px;line-height:1.5;margin:0 0 8px;white-space:pre-wrap"></pre>
+      <div class="bar"><button class="alt" onclick="clearLog()">Clear</button>
+        <span class="legend">live: signs · light · red line · obstacle · state · legal turns</span></div>
     </div>
     <div class="card"><h2>Live config</h2>
       <div id="cfg">loading…</div>
@@ -882,6 +1008,52 @@ document.querySelectorAll('#dpad button').forEach(b=>{
  b.addEventListener('mousedown',down); b.addEventListener('mouseup',up); b.addEventListener('mouseleave',up);
  b.addEventListener('touchstart',down); b.addEventListener('touchend',up);
 });
+// ---- detection log ---------------------------------------------------------
+let _logId=0;
+async function pollLog(){
+ let es; try{ es=await (await fetch('/log?since='+_logId)).json(); }catch(e){ return; }
+ if(!es||!es.length) return;
+ const box=document.getElementById('logbox'); if(!box) return;
+ const atBottom = box.scrollHeight-box.scrollTop-box.clientHeight < 40;
+ const col={state:'#7fd1b9',sign:'#fc3',light:'#e85',redline:'#e55',obstacle:'#e66',decision:'#39c'};
+ let add='';
+ for(const e of es){ _logId=e.id;
+   add+='<span style="color:#556">'+e.t.toFixed(1)+'</span> '
+       +'<span style="color:'+(col[e.type]||'#9aa0aa')+'">'+e.type+'</span> '
+       +(''+e.msg).replace(/</g,'&lt;')+'\n';
+ }
+ box.innerHTML+=add;
+ if(atBottom) box.scrollTop=box.scrollHeight;
+}
+function clearLog(){ const b=document.getElementById('logbox'); if(b) b.innerHTML=''; }
+// ---- per-sign jump buttons (generated from course_map) ---------------------
+async function loadScenarios(){
+ let xs; try{ xs=await (await fetch('/scenarios')).json(); }catch(e){ return; }
+ const c=document.getElementById('scbtns'); if(!c) return; c.innerHTML='';
+ for(const s of xs){ const b=document.createElement('button'); b.className='alt';
+   b.textContent=s.label; b.onclick=()=>scenario(s.name); c.appendChild(b); }
+}
+// ---- in-page test runner ---------------------------------------------------
+let _testPoll=null;
+async function runTests(){
+ document.getElementById('teststat').textContent='starting…';
+ document.getElementById('testres').innerHTML='';
+ try{ await fetch('/test/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'all'})}); }catch(e){}
+ if(_testPoll) clearInterval(_testPoll);
+ _testPoll=setInterval(async()=>{
+   let d; try{ d=await (await fetch('/test/status')).json(); }catch(e){ return; }
+   document.getElementById('teststat').textContent = d.running
+     ? ('running: '+d.current+'  ('+d.passed+'/'+d.total+')')
+     : ('finished — '+d.passed+'/'+((d.results||[]).length)+' passed');
+   let h=''; for(const r of (d.results||[])){
+     h+='<div style="margin:3px 0"><b style="color:'+(r.pass?"#2d7":"#e66")+'">'+(r.pass?'PASS':'FAIL')+'</b> '+r.name+'<br><span style="color:#9aa0aa">'+(''+r.detail).replace(/</g,'&lt;')+'</span></div>';
+   }
+   document.getElementById('testres').innerHTML=h;
+   if(!d.running){ clearInterval(_testPoll); _testPoll=null; document.getElementById('drvmsg').textContent='agent running'; }
+ }, 900);
+}
+loadScenarios();
+setInterval(pollLog, 700);
 load();
 </script></body></html>"""
 

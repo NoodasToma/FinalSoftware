@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import math
 import os
 from dataclasses import dataclass
+from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -11,7 +10,7 @@ import numpy as np
 @dataclass
 class TagObservation:
     id: int
-    center_xy: tuple[int, int]
+    center_xy: Tuple[int, int]
     side_length_px: int
     est_distance_m: float
     est_yaw_rad: float
@@ -53,18 +52,33 @@ class AprilTagDetector:
         # real bot finds its calibration; the sim, lacking one, gets inf).
         self._intrinsics = intrinsics if intrinsics is not None else _try_load_intrinsics()
         self._warned = False
-        # pupil_apriltags is a C-extension wheel; if it isn't installed for the
-        # running interpreter (e.g. a very new Python with no wheel yet),
-        # degrade gracefully to "no tags" instead of crashing the whole agent.
-        try:
-            import pupil_apriltags
-            self._det = pupil_apriltags.Detector(families="tag36h11")
-        except Exception as exc:
-            self._det = None
-            print(f"[AprilTagDetector] pupil_apriltags unavailable ({exc}); "
-                  f"tag detection disabled - detect() returns [].")
+        # AprilTag backend. Try each compatible C-extension in turn and use the
+        # first that imports. pupil_apriltags (dev/sim) and dt_apriltags (the
+        # library pre-installed on real Duckiebots) share the SAME API
+        # (Detector(families=...), detect(gray, estimate_tag_pose, camera_params,
+        # tag_size) -> detections with .tag_id/.center/.corners/.pose_t/.pose_R),
+        # so detect() below works unchanged with either. If NONE is installed we
+        # degrade gracefully to "no tags" instead of crashing the whole agent
+        # (the bot still lane-follows + brakes for obstacles, just blind to signs).
+        self._det = None
+        self._backend = None
+        _last = None
+        for _modname in ("pupil_apriltags", "dt_apriltags"):
+            try:
+                _mod = __import__(_modname)
+                self._det = _mod.Detector(families="tag36h11")
+                self._backend = _modname
+                print(f"[AprilTagDetector] using {_modname}")
+                break
+            except Exception as exc:
+                _last = exc
+        if self._det is None:
+            print(f"[AprilTagDetector] no AprilTag library available "
+                  f"(tried pupil_apriltags, dt_apriltags; last error: {_last}); "
+                  f"sign/light detection DISABLED. Install one on the bot, e.g. "
+                  f"`pip3 install dt-apriltags`.")
 
-    def detect(self, bgr_frame: np.ndarray) -> list[TagObservation]:
+    def detect(self, bgr_frame: np.ndarray) -> List[TagObservation]:
         if bgr_frame is None or bgr_frame.size == 0:
             return []
         if self._det is None:

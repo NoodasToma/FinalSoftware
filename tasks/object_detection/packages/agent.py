@@ -20,6 +20,15 @@ _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '
 CLASS_NAMES  = {0: 'duckie', 1: 'truck', 2: 'sign'}
 CLASS_COLORS = {0: (0, 215, 255), 1: (180, 100, 220), 2: (50, 205, 50)}
 
+
+def _cpu_only():
+    """When OBJDET_CPU=1, skip the TensorRT/GPU path and run inference on CPU.
+    Set by servers/project/real_server.py on the Jetson, where building the TRT
+    engine runs the device out of memory ('Device memory insufficient') and
+    thrashes the whole bot to a freeze. CPU inference is slower but reliable, and
+    the project agent runs object detection in a throttled background thread."""
+    return os.environ.get('OBJDET_CPU', '').strip().lower() in ('1', 'true', 'yes')
+
 Detection = Tuple[Tuple[int, int, int, int], float, int]
 
 
@@ -72,7 +81,7 @@ class ObjectDetectionAgent:
             print(f"[ObjectDetection] {self.load_error}")
             return
 
-        if self._tensorrt_available():
+        if self._tensorrt_available() and not _cpu_only():
             self.trt_building     = True
             self._trt_build_start = time.time()
             threading.Thread(target=self._build_trt_engine, daemon=True).start()
@@ -166,10 +175,12 @@ class ObjectDetectionAgent:
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = os.cpu_count() or 4
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            providers = (['CPUExecutionProvider'] if _cpu_only()
+                         else ['CUDAExecutionProvider', 'CPUExecutionProvider'])
             self.session = ort.InferenceSession(
                 self.model_path,
                 sess_options=opts,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+                providers=providers,
             )
             inp = self.session.get_inputs()[0]
             self._input_name  = inp.name

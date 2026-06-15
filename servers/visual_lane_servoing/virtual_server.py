@@ -84,15 +84,17 @@ def reset():
 @app.route('/update_config', methods=['POST'])
 def update_config():
     data = request.json
-    agent.p_gain     = float(data.get('k_d',   agent.p_gain))
-    agent.d_gain     = float(data.get('k_phi', agent.d_gain))
-    agent.base_speed = float(data.get('const', agent.base_speed))
+    agent.p_gain       = float(data.get('k_d',    agent.p_gain))
+    agent.d_gain       = float(data.get('k_phi',  agent.d_gain))
+    agent.base_speed   = float(data.get('const',  agent.base_speed))
+    agent.center_offset = float(data.get('offset', agent.center_offset))
     try:
         with open(LANE_CONFIG_FILE, 'r') as f:
             saved = yaml.safe_load(f) or {}
-        saved['p_gain']     = agent.p_gain
-        saved['d_gain']     = agent.d_gain
-        saved['base_speed'] = agent.base_speed
+        saved['p_gain']       = agent.p_gain
+        saved['d_gain']       = agent.d_gain
+        saved['base_speed']   = agent.base_speed
+        saved['center_offset'] = agent.center_offset
         with open(LANE_CONFIG_FILE, 'w') as f:
             yaml.dump(saved, f, default_flow_style=False)
     except Exception as e:

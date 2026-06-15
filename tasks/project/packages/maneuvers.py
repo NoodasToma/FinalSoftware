@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import time
+from typing import Optional
 
 
 def ramp_speed(current: float, target: float, max_step: float) -> float:
@@ -12,7 +11,7 @@ def ramp_speed(current: float, target: float, max_step: float) -> float:
     return current + (max_step if delta > 0 else -max_step)
 
 
-def _outer_ticks(wheels, side: str) -> int | None:
+def _outer_ticks(wheels, side: str) -> Optional[int]:
     encoders = getattr(wheels, 'encoders', None)
     if encoders is None:
         return None
@@ -20,7 +19,7 @@ def _outer_ticks(wheels, side: str) -> int | None:
 
 
 def _await_motion(wheels, stop_event, outer_side: str, target_ticks: int,
-                  seconds: float, start_ticks: int | None = None) -> None:
+                  seconds: float, start_ticks: Optional[int] = None) -> None:
     """Block until a maneuver completes, on either platform.
 
     ENCODER path (``wheels.encoders`` present — the real DaguWheelsDriver AND the
@@ -52,8 +51,33 @@ def _await_motion(wheels, stop_event, outer_side: str, target_ticks: int,
     if start_ticks is None:
         start_ticks = outer.ticks
 
+    # SAFETY TIMEOUT. On the real bot the wheel encoders are frequently not
+    # actually counting (GPIO encoders not wired / failed to init silently). Then
+    # `outer.ticks` never changes, the tick target is never reached, and this loop
+    # would block FOREVER -> the whole agent freezes the instant it turns at an
+    # intersection (the exact "drove around then froze" failure). So cap the wait:
+    # if the encoders don't deliver the turn within a sane wall-clock window, fall
+    # back to a TIME-based turn (rotate for `seconds`) and finish. A real,
+    # working-encoder turn completes well under the cap; the sim is unaffected
+    # (its modelled encoder advances normally).
+    deadline = time.time() + max(seconds, 0.1)   # time-based fallback duration
+    hard_cap = time.time() + max(seconds * 3.0, 6.0)
+    moved_any = False
     while not stop_event.is_set():
-        if abs(outer.ticks - start_ticks) >= target_ticks:
+        moved = abs(outer.ticks - start_ticks)
+        if moved >= target_ticks:
+            return
+        if moved > 2:
+            moved_any = True
+        now = time.time()
+        # Encoders clearly dead (no ticks at all after the fallback window): stop
+        # waiting on them and complete the turn by time instead.
+        if not moved_any and now >= deadline:
+            t_end = now + max(seconds, 0.1)
+            while time.time() < t_end and not stop_event.is_set():
+                time.sleep(0.01)
+            return
+        if now >= hard_cap:          # absolute safety: never block past this
             return
         time.sleep(0.01)
 

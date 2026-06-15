@@ -70,6 +70,13 @@ class LaneServoingAgent:
         self.recovery_speed      = cfg.get('recovery_speed',      0.15)
         self.recovery_turn       = cfg.get('recovery_turn',       0.08)
         self.recovery_max_frames = int(cfg.get('recovery_max_frames', 12))
+        # Lateral target bias, normalized [-1, 1]. The lane center is the midpoint
+        # of the yellow + white lines, but the dashed yellow / sparsely-detected
+        # white make that estimate drift slightly toward the white edge when only
+        # one line is seen. A POSITIVE center_offset shifts the target toward the
+        # yellow (steer a touch left), so the bot rides the middle instead of
+        # hugging the white edge. Tunable live via /update_config {"offset": ...}.
+        self.center_offset       = cfg.get('center_offset',       0.0)
 
         self.frame_count        = 0
         self._recovery_frames   = 0
@@ -188,6 +195,9 @@ class LaneServoingAgent:
         is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)
 
         raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
+        # Bias the target toward the yellow line so the bot rides the lane middle
+        # rather than drifting to the white edge (see center_offset above).
+        raw_error            = float(np.clip(raw_error + self.center_offset, -1.0, 1.0))
         self._filtered_error = 0.5 * self._filtered_error + 0.5 * raw_error
         steering             = self._calculate_steering(self._filtered_error)
         left, right          = self._motor_commands(steering, recovery, is_curve, both_visible)

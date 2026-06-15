@@ -17,6 +17,18 @@
 [ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00008.png" id="17_tag8"]
 [ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00074.png" id="18_tag74"]
 [ext_resource type="PackedScene" path="res://scenes/objects/obj_vehicle_tag.tscn" id="19_vtag"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00002.png" id="bay_tag2"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00003.png" id="bay_tag3"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00004.png" id="bay_tag4"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00005.png" id="bay_tag5"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00006.png" id="bay_tag6"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00007.png" id="bay_tag7"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00009.png" id="bay_tag9"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00010.png" id="bay_tag10"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00011.png" id="bay_tag11"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00012.png" id="bay_tag12"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00095.png" id="bay_tag95"]
+[ext_resource type="Texture2D" path="res://textures/tag36h11/tag36_11_00125.png" id="bay_tag125"]
 
 [sub_resource type="Curve3D" id="Curve3D_xdp4q"]
 _data = {
@@ -26,7 +38,7 @@ _data = {
 point_count = 33
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_k563b"]
-size = Vector3(28.8, 0.1, 28.8)
+size = Vector3(44, 0.1, 44)
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_31o5q"]
 cull_mode = 2
@@ -34,7 +46,7 @@ shading_mode = 0
 albedo_color = Color(0.14, 0.22, 0.1, 1)
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_y7vrc"]
-size = Vector2(28.8, 28.8)
+size = Vector2(44, 44)
 
 [sub_resource type="StandardMaterial3D" id="StopLineMat"]
 shading_mode = 0
@@ -291,13 +303,46 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.032, 0.13, 5.7)
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.08, 0.091, 6.15)
 sign_texture = ExtResource("7_xv6rw")
 
+[node name="Label" type="Label3D" parent="Signs/Sign_stop"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
 [node name="Sign_4way" parent="Signs" instance=ExtResource("13_tagbb")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.08, 0, 6.5)
 sign_texture = ExtResource("17_tag8")
 
+[node name="Label" type="Label3D" parent="Signs/Sign_4way"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "4-way-intersect"
+
 [node name="Sign_tlight" parent="Signs" instance=ExtResource("13_tagbb")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0, 3.2)
 sign_texture = ExtResource("18_tag74")
+
+[node name="Label" type="Label3D" parent="Signs/Sign_tlight"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "t-light-ahead"
 
 [node name="Sign_parking" parent="Signs" unique_id=882736530 instance=ExtResource("8_tw3f0")]
 transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.6, 0.091, 6)
@@ -305,6 +350,17 @@ transform = Transform3D(-1, 0, -8.742278e-08, 0, 1, 0, 8.742278e-08, 0, -1, 0.6,
 [node name="Sign_stop_T" parent="Signs" instance=ExtResource("6_n1yv4")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 7.2, 0.091, 2.4)
 sign_texture = ExtResource("7_xv6rw")
+
+[node name="Label" type="Label3D" parent="Signs/Sign_stop_T"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.45, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
 
 [node name="TrafficLight_demo" parent="." instance=ExtResource("16_tlight")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.05, 0, 2.7)
@@ -315,6 +371,17 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.12, 0.155, 4.05)
 [node name="VehiclePlate" parent="ParkedBot" instance=ExtResource("19_vtag")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.09, 0.115)
 sign_texture = ExtResource("15_tag400")
+
+[node name="Label" type="Label3D" parent="ParkedBot/VehiclePlate"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "vehicle"
 
 [node name="StopLines" type="Node3D" parent="."]
 
@@ -375,10 +442,460 @@ light_energy = 0.35
 [node name="Ground" type="StaticBody3D" parent="." unique_id=388770242]
 
 [node name="@CollisionShape3D@44881" type="CollisionShape3D" parent="Ground" unique_id=1394592451]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.8, 0.041, 4.8)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0.041, 10)
 shape = SubResource("BoxShape3D_k563b")
 
 [node name="GroundMesh" type="MeshInstance3D" parent="." unique_id=297872305]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.8, 0.084, 4.8)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0.084, 10)
 material_override = SubResource("StandardMaterial3D_31o5q")
 mesh = SubResource("PlaneMesh_y7vrc")
+
+; ===== AUTO-GENERATED SIGN BAYS (build_strip.py) =====
+
+[node name="SignBays" type="Node3D" parent="."]
+
+[node name="Bay_yield_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 9.3)
+
+[node name="Bay_yield_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 9.9)
+
+[node name="Bay_yield_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 10.5)
+
+[node name="Bay_yield_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 11.1)
+
+[node name="Bay_yield_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.65, 0.096, 9.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_yield_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.95, 0, 9.1)
+sign_texture = ExtResource("bay_tag2")
+
+[node name="Bay_yield_trig_lbl" type="Label3D" parent="SignBays/Bay_yield_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "yield"
+
+[node name="Bay_t_intersect_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 9.3)
+
+[node name="Bay_t_intersect_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 9.9)
+
+[node name="Bay_t_intersect_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 10.5)
+
+[node name="Bay_t_intersect_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 11.1)
+
+[node name="Bay_t_intersect_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.15, 0.096, 9.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_t_intersect_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.45, 0, 9.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_t_intersect_trig_lbl" type="Label3D" parent="SignBays/Bay_t_intersect_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_t_intersect_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.85, 0, 9.1)
+sign_texture = ExtResource("bay_tag11")
+
+[node name="Bay_t_intersect_test_lbl" type="Label3D" parent="SignBays/Bay_t_intersect_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "T-intersection"
+
+[node name="Bay_right_t_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 9.3)
+
+[node name="Bay_right_t_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 9.9)
+
+[node name="Bay_right_t_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 10.5)
+
+[node name="Bay_right_t_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 11.1)
+
+[node name="Bay_right_t_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.65, 0.096, 9.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_right_t_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.95, 0, 9.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_right_t_trig_lbl" type="Label3D" parent="SignBays/Bay_right_t_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_right_t_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.35, 0, 9.1)
+sign_texture = ExtResource("bay_tag9")
+
+[node name="Bay_right_t_test_lbl" type="Label3D" parent="SignBays/Bay_right_t_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "right-T-intersect"
+
+[node name="Bay_left_t_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 13.3)
+
+[node name="Bay_left_t_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 13.9)
+
+[node name="Bay_left_t_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 14.5)
+
+[node name="Bay_left_t_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 15.1)
+
+[node name="Bay_left_t_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.65, 0.096, 13.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_left_t_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.95, 0, 13.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_left_t_trig_lbl" type="Label3D" parent="SignBays/Bay_left_t_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_left_t_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.35, 0, 13.1)
+sign_texture = ExtResource("bay_tag10")
+
+[node name="Bay_left_t_test_lbl" type="Label3D" parent="SignBays/Bay_left_t_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "left-T-intersect"
+
+[node name="Bay_oneway_right_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 13.3)
+
+[node name="Bay_oneway_right_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 13.9)
+
+[node name="Bay_oneway_right_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 14.5)
+
+[node name="Bay_oneway_right_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 15.1)
+
+[node name="Bay_oneway_right_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.15, 0.096, 13.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_oneway_right_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.45, 0, 13.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_oneway_right_trig_lbl" type="Label3D" parent="SignBays/Bay_oneway_right_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_oneway_right_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.85, 0, 13.1)
+sign_texture = ExtResource("bay_tag6")
+
+[node name="Bay_oneway_right_test_lbl" type="Label3D" parent="SignBays/Bay_oneway_right_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "oneway-right"
+
+[node name="Bay_oneway_left_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 13.3)
+
+[node name="Bay_oneway_left_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 13.9)
+
+[node name="Bay_oneway_left_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 14.5)
+
+[node name="Bay_oneway_left_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 15.1)
+
+[node name="Bay_oneway_left_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.65, 0.096, 13.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_oneway_left_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.95, 0, 13.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_oneway_left_trig_lbl" type="Label3D" parent="SignBays/Bay_oneway_left_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_oneway_left_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.35, 0, 13.1)
+sign_texture = ExtResource("bay_tag7")
+
+[node name="Bay_oneway_left_test_lbl" type="Label3D" parent="SignBays/Bay_oneway_left_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "oneway-left"
+
+[node name="Bay_no_right_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 17.3)
+
+[node name="Bay_no_right_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 17.9)
+
+[node name="Bay_no_right_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 18.5)
+
+[node name="Bay_no_right_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.091, 19.1)
+
+[node name="Bay_no_right_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.65, 0.096, 17.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_no_right_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.95, 0, 17.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_no_right_trig_lbl" type="Label3D" parent="SignBays/Bay_no_right_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_no_right_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.35, 0, 17.1)
+sign_texture = ExtResource("bay_tag3")
+
+[node name="Bay_no_right_test_lbl" type="Label3D" parent="SignBays/Bay_no_right_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "no-right-turn"
+
+[node name="Bay_no_left_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 17.3)
+
+[node name="Bay_no_left_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 17.9)
+
+[node name="Bay_no_left_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 18.5)
+
+[node name="Bay_no_left_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.0, 0.091, 19.1)
+
+[node name="Bay_no_left_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.15, 0.096, 17.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_no_left_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6.45, 0, 17.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_no_left_trig_lbl" type="Label3D" parent="SignBays/Bay_no_left_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_no_left_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.85, 0, 17.1)
+sign_texture = ExtResource("bay_tag4")
+
+[node name="Bay_no_left_test_lbl" type="Label3D" parent="SignBays/Bay_no_left_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "no-left-turn"
+
+[node name="Bay_do_not_enter_tile0" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 17.3)
+
+[node name="Bay_do_not_enter_tile1" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 17.9)
+
+[node name="Bay_do_not_enter_tile2" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 18.5)
+
+[node name="Bay_do_not_enter_tile3" parent="SignBays" instance=ExtResource("1_xdp4q")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.5, 0.091, 19.1)
+
+[node name="Bay_do_not_enter_line" type="MeshInstance3D" parent="SignBays"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.65, 0.096, 17.0)
+mesh = SubResource("StopLineNS")
+
+[node name="Bay_do_not_enter_trig" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.95, 0, 17.1)
+sign_texture = ExtResource("7_xv6rw")
+
+[node name="Bay_do_not_enter_trig_lbl" type="Label3D" parent="SignBays/Bay_do_not_enter_trig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "stop"
+
+[node name="Bay_do_not_enter_test" parent="SignBays" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10.35, 0, 17.1)
+sign_texture = ExtResource("bay_tag5")
+
+[node name="Bay_do_not_enter_test_lbl" type="Label3D" parent="SignBays/Bay_do_not_enter_test"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "do-not-enter"
+
+[node name="DecodeSigns" type="Node3D" parent="."]
+
+[node name="Decode_duck_crossing" parent="DecodeSigns" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.18, 0, 4.5)
+sign_texture = ExtResource("bay_tag95")
+
+[node name="Decode_duck_crossing_lbl" type="Label3D" parent="DecodeSigns/Decode_duck_crossing"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "duck-crossing"
+
+[node name="Decode_pedestrian" parent="DecodeSigns" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.18, 0, 3.9)
+sign_texture = ExtResource("bay_tag12")
+
+[node name="Decode_pedestrian_lbl" type="Label3D" parent="DecodeSigns/Decode_pedestrian"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "pedestrian"
+
+[node name="Decode_parking" parent="DecodeSigns" instance=ExtResource("13_tagbb")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.18, 0, 3.3)
+sign_texture = ExtResource("bay_tag125")
+
+[node name="Decode_parking_lbl" type="Label3D" parent="DecodeSigns/Decode_parking"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
+pixel_size = 0.0028
+billboard = 1
+double_sided = true
+modulate = Color(1, 1, 1, 1)
+outline_modulate = Color(0, 0, 0, 1)
+outline_size = 16
+font_size = 30
+text = "parking"

@@ -1,7 +1,6 @@
 # One thing to flag: lane_mask in is_at_stop_line is assumed to be a binary/grayscale mask where nonzero pixels represent red stop-line pixels. If Person A's traffic light module or Person C's pipeline passes a different format (e.g. a BGR crop), you'll need to align on that before C5 lands.
-from __future__ import annotations
-
 import math
+from typing import List, Optional, Set
 
 import numpy as np
 
@@ -49,7 +48,7 @@ _RED_LINE_DEFAULTS = {
 }
 
 
-def detect_red_line(bgr_frame, cfg: dict | None = None) -> bool:
+def detect_red_line(bgr_frame, cfg: Optional[dict] = None) -> bool:
     """Is a red STOP LINE directly in front of the bot (i.e. are we AT the line)?
 
     Duckietown paints red stop lines across the lane at intersections; the
@@ -82,7 +81,7 @@ def detect_red_line(bgr_frame, cfg: dict | None = None) -> bool:
     return int(cv2.countNonZero(m1) + cv2.countNonZero(m2)) >= int(c["line_min_px"])
 
 
-def merge_turn_constraints(observed_signs: list[SignSemantic]) -> set[str]:
+def merge_turn_constraints(observed_signs: List[SignSemantic]) -> Set[str]:
     allowed = set(_ALL_TURNS)
 
     for sign in observed_signs:

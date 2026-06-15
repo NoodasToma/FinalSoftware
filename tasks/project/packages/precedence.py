@@ -1,9 +1,9 @@
-from __future__ import annotations
+from typing import List
 
 from tasks.project.packages.sign_registry import SignSemantic
 
 
-def we_go_first(my_name: str, recent_vehicle_signs: list[SignSemantic]) -> bool:
+def we_go_first(my_name: str, recent_vehicle_signs: List[SignSemantic]) -> bool:
     for sign in recent_vehicle_signs:
         if sign.tag_type != "Vehicle" or sign.vehicle_name is None:
             continue

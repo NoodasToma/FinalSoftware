@@ -28,8 +28,48 @@ turn_right_inner_speed: 0.30
 turn_right_outer_speed: 0.45
 turn_right_ticks: 517
 
+# Camera watchdog: OFF by default. It runs a SECOND thread that zeros the wheels
+# (an I2C write) on a camera stall; doing I2C from two threads at once crashed the
+# agent with OSError(121) 'Remote I/O error'. The proven reference design has no
+# watchdog (single I2C writer). Set to true ONLY if you actually see the camera
+# block mid-run; the agent's I2C lock then keeps the second writer bus-safe.
+camera_watchdog: false
+
+# AprilTag detection ON (signs/lights/precedence).
+detectors_enabled: true
+
+# Inline detector cadence: run AprilTag detection every Nth camera frame (lane
+# runs EVERY frame). Higher = smoother steering, slower sign reaction. 3 ≈ good.
+detect_every: 3
+
+# YOLO obstacle detection on the Jetson Nano: DISABLED (0 = never run).
+# On GPU it ran the device out of memory building the TensorRT engine (freeze);
+# on CPU its numpy post-processing holds the Python GIL for ~1-2 s per inference,
+# freezing the loop. The Nano can't run this model alongside real-time control.
+# With it off the bot still does EVERYTHING except duckie-obstacle braking:
+# lane-follow, stop/yield/4-way signs, traffic lights, stop+turn, and other-robot
+# precedence (all via the cheap AprilTag detector). Set to e.g. 5 to re-enable
+# YOLO once every 5 detect passes if you accept the stutter.
+yolo_every: 0
+
+# DRIVE speed factor. The agent commands wheels = lane_output * base_speed * 2.
+# base_speed=0.5 -> factor 1.0 = PASS-THROUGH, i.e. apply the lane agent's
+# commands exactly like the (working) visual_lane_servoing server does. The old
+# 0.25 halved every command, pushing the real motors near their pwm_min=60
+# stiction deadzone where they move erratically -> the bot wandered off the road.
+base_speed: 0.5
+
 turn_left_inner_speed: 0.35
 turn_left_outer_speed: 0.45
 turn_left_ticks: 829
 
 straight_ticks: 758
+
+# TIME-BASED turn durations — used as a fallback when the wheel encoders aren't
+# counting (so a turn can't block forever / freeze the agent). Tune these on the
+# bot if the encoders are dead and the turn angle is off: bigger = turns more.
+# (If the encoders DO work, the tick targets above govern and these are ignored.)
+turn_left_seconds: 2.6
+turn_right_seconds: 2.4
+straight_seconds: 2.0
+turn_timeout_s: 6.0

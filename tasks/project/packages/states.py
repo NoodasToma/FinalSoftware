@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 from enum import Enum, auto
+from typing import Dict, Tuple
 
 
 class State(Enum):
@@ -14,7 +13,7 @@ class State(Enum):
     SOFT_STOP = auto()
 
 
-TRANSITIONS: dict[tuple[State, str], State] = {
+TRANSITIONS: Dict[Tuple[State, str], State] = {
     (State.DRIVE,            'see_stop_or_yield'):  State.APPROACH,
     (State.DRIVE,            'see_light'):          State.APPROACH,
     (State.DRIVE,            'obstacle'):           State.SOFT_STOP,

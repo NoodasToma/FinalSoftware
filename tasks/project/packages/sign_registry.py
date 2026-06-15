@@ -1,15 +1,13 @@
-from __future__ import annotations
-
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, FrozenSet, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-_ALL_TURNS: frozenset[str] = frozenset({"left", "right", "straight"})
+_ALL_TURNS: FrozenSet[str] = frozenset({"left", "right", "straight"})
 
-_TURN_MAP: dict[str, frozenset[str]] = {
+_TURN_MAP: Dict[str, FrozenSet[str]] = {
     "4-way-intersect":   frozenset({"left", "right", "straight"}),
     "T-intersection":    frozenset({"left", "right"}),
     "right-T-intersect": frozenset({"straight", "right"}),
@@ -27,7 +25,7 @@ class SignSemantic:
     vehicle_name: Optional[str]
 
     @property
-    def available_turns(self) -> set[str]:
+    def available_turns(self) -> Set[str]:
         return set(_TURN_MAP.get(self.kind, _ALL_TURNS))
 
 
@@ -43,7 +41,7 @@ def _find_db_path() -> str:
     raise FileNotFoundError("apriltagsDB.yaml not found. Searched: " + str(candidates))
 
 
-def _load_db() -> dict[int, SignSemantic]:
+def _load_db() -> Dict[int, SignSemantic]:
     import yaml
 
     with open(_find_db_path()) as fh:
@@ -52,7 +50,7 @@ def _load_db() -> dict[int, SignSemantic]:
     if not isinstance(entries, list):
         raise ValueError(f"apriltagsDB.yaml: expected list, got {type(entries)}")
 
-    registry: dict[int, SignSemantic] = {}
+    registry: Dict[int, SignSemantic] = {}
     for entry in entries:
         tag_id = entry.get("tag_id")
         if tag_id is None:
@@ -69,7 +67,7 @@ def _load_db() -> dict[int, SignSemantic]:
 
 
 try:
-    _REGISTRY: dict[int, SignSemantic] = _load_db()
+    _REGISTRY: Dict[int, SignSemantic] = _load_db()
 except Exception as _exc:
     logger.error("sign_registry: failed to load DB — %s", _exc)
     _REGISTRY = {}

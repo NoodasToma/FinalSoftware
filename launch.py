@@ -321,6 +321,17 @@ def _bot_host(target):
     return target if target.replace('.', '').isdigit() else f"{target}.local"
 
 
+# Sibling tasks whose `packages` (and `models`) a task imports at RUNTIME and
+# which must therefore ride along in the deploy tarball so a fresh bot is
+# self-contained. `project` reuses the lane-following + object-detection agents
+# (tasks/project/packages/agent.py imports tasks.visual_lane_servoing and
+# tasks.object_detection), and object_detection loads tasks/object_detection/
+# models/best.onnx — none of which the single-task package would otherwise ship.
+TASK_PACKAGE_DEPS = {
+    'project': ['visual_lane_servoing', 'object_detection'],
+}
+
+
 def package_task(task_name):
     print(f"Packaging task: {task_name}")
     task_packages_dir = os.path.join(PROJECT_ROOT, 'tasks', task_name, 'packages')
@@ -351,6 +362,20 @@ def package_task(task_name):
         if os.path.exists(task_server_dir):
             print(f"   Adding server: servers/{task_name}/")
             tar.add(task_server_dir, arcname=f'servers/{task_name}', filter=no_pycache)
+
+        # Bundle sibling tasks this one imports at runtime (+ their models), so
+        # the deployed slice is self-contained on a fresh bot.
+        for dep in TASK_PACKAGE_DEPS.get(task_name, []):
+            dep_pkg = os.path.join(PROJECT_ROOT, 'tasks', dep, 'packages')
+            dep_models = os.path.join(PROJECT_ROOT, 'tasks', dep, 'models')
+            if os.path.isdir(dep_pkg):
+                print(f"   Adding dependency packages: tasks/{dep}/packages/")
+                tar.add(dep_pkg, arcname=f'tasks/{dep}/packages', filter=no_pycache)
+            else:
+                print(f"   WARNING: dependency '{dep}' packages not found at {dep_pkg}")
+            if os.path.isdir(dep_models):
+                print(f"   Adding dependency models: tasks/{dep}/models/")
+                tar.add(dep_models, arcname=f'tasks/{dep}/models', filter=no_pycache)
 
     buf.seek(0)
     print("Package created!")
