@@ -60,10 +60,35 @@ into the purple/pink surroundings and created false lane edges).
 
 ---
 
-## 1. AprilTags — library now installed (pupil_apriltags) ✓
+## 1. AprilTags — library installed SYSTEM-WIDE (pupil_apriltags) ✓ — verified detecting tags
 
-The bot now has **pupil_apriltags** (you installed it). The detector tries it first, so signs/
-lights work. No action needed. (`dt_apriltags` fallback also in place if ever needed.)
+**Status:** working on the bot — the running task logs `[agent] AprilTag backend='pupil_apriltags'`
+and a tag36h11 sign shows up under `/telemetry` `tags` with its box drawn on `/video`.
+
+**⚠️ The subtle bug that bit us (read before re-imaging a bot):** a plain
+`pip3 install --user pupil-apriltags` is **NOT enough**. The dashboard daemon
+(`duckiebot/start_bot.py`) launches the task **as root**, and root's Python does **not**
+search `/home/<user>/.local`, so a `--user` install is invisible to the task →
+`AprilTagDetector` silently falls back to "no library" → **every tag undetected**
+(`tags=0`, no sign boxes), even though `import pupil_apriltags` works fine from your SSH
+shell. It must be installed into the **system** site-packages
+(`/usr/local/lib/python3.6/dist-packages`). Also: never leave BOTH a `--user` and a system
+copy — two builds of the bundled `libapriltag.so` **segfault** on import.
+
+**Reproducible install (fresh bot / after re-image):**
+```bash
+bash duckiebot/apriltags/install.sh      # builds the cp36/aarch64 wheel, installs it
+                                         # system-wide, removes any --user copy, verifies
+                                         # `sudo -H python3 -c "import pupil_apriltags"`.
+```
+Idempotent — safe to re-run; exits early if root can already import it. (JetPack 4.6 has the
+cmake+gcc toolchain it needs. The script upgrades the per-user pip first because JetPack's
+pip 9 can't PEP517-build the package.)
+
+**Verify:** restart the task, log shows `[agent] AprilTag backend='pupil_apriltags'` (NOT
+`backend=None`); hold a tag36h11 sign in view → it appears under `/telemetry` `tags` and the
+state machine reacts (DRIVE→APPROACH→STOPPED). `backend=None` in the log = library not visible
+to root → re-run the install script above.
 
 ## 1-old. (historical) AprilTags were disabled — no tag library on the bot
 

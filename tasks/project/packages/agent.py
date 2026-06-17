@@ -1,6 +1,8 @@
 import os
+import queue
 import random
 import socket
+import sys
 import threading
 import time
 from collections import deque
@@ -17,6 +19,7 @@ from tasks.project.packages.perception import (
     should_brake_for_yellow,
     detect_red_line,
 )
+from tasks.project.packages.perception.duck_hsv import detect_duckies_hsv, detect_vehicles_hsv
 from tasks.project.packages.sign_registry import lookup
 from tasks.project.packages.precedence import we_go_first
 
@@ -243,12 +246,36 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
         tag_size_m=apriltag_tag_size or 0.065,
         intrinsics=apriltag_intrinsics,
     )
-    # Build the YOLO object detector ONLY if it will actually run. With
-    # yolo_every=0 (the bot default — the Nano can't run YOLO alongside real-time
-    # control) obj.detect() is never called, yet constructing it still loads the
-    # ONNX model (hundreds of MB) into the 4 GB Nano. Skipping that unused load
-    # cuts the memory pressure that aggravates camera stalls / I2C glitches.
-    obj = ObjectDetectionAgent() if int(timings.get('yolo_every', 0)) > 0 else None
+    # Flushed so it actually lands in the bot's task log (the agent runs on a
+    # thread whose default block-buffered stdout otherwise hides these prints).
+    print("[agent] AprilTag backend=%r (None => sign/light/other-bot-tag detection OFF)"
+          % tags._backend, flush=True)
+    # Object (duckie) detector. It runs in a DECOUPLED background thread (see
+    # _detection_worker below), NOT inline — that is what makes it safe on the
+    # Nano now (the old inline obj.detect() blocked the control loop ~0.3 s/frame
+    # and froze it). The model is small (~7 MB ONNX) and on the bot real_server
+    # forces CPU inference (OBJDET_CPU=1), so there is no TensorRT-build OOM.
+    # Disable entirely with `object_detection: false` in the timings.
+    _obj_enabled = bool(timings.get('object_detection', True))
+    obj = ObjectDetectionAgent() if _obj_enabled else None
+    # Pick the duckie-detection backend. The trained model is best, but it needs
+    # onnxruntime or a recent OpenCV — the real bot has neither (OpenCV 4.1.1's
+    # cv2.dnn can't parse the YOLOv5 ONNX). So when the model can't load we fall
+    # back to the dependency-free HSV+shape detector (perception/duck_hsv.py),
+    # which runs on the bot's stock OpenCV. Both emit [(bbox, score, 0)] in
+    # full-frame pixels, so the rest of the obstacle/SOFT_STOP path is identical.
+    if obj is not None and obj.model_loaded:
+        _duck_mode = 'model'
+    elif _obj_enabled and bool(timings.get('duck_hsv', True)):
+        _duck_mode = 'hsv'
+    else:
+        _duck_mode = 'off'
+    _duck_hsv_cfg = timings.get('duck_hsv_cfg') or None
+    # Other-bot detection by colour (the local bots are blue, with no AprilTag
+    # plate, so the tag path can't see them). Runs inline alongside the duck
+    # detector; cheap OpenCV. Disable with bot_hsv: false.
+    _bot_hsv = bool(timings.get('bot_hsv', True))
+    _bot_hsv_cfg = timings.get('bot_hsv_cfg') or None
 
     state = State.DRIVE
     current_speed = 0.0
@@ -268,18 +295,29 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     stopped_at: Optional[float] = None  # when we entered STOPPED (for the full-stop pause)
     obstacle_last_seen = -1e9   # wall-clock of the last positive obstacle detection (debounce)
 
-    # SINGLE-THREADED inline loop (like the working reference). Earlier I ran the
-    # camera read and the detectors in BACKGROUND threads; the AprilTag/YOLO
-    # C-extensions hold Python's GIL for long stretches, which starved the camera
-    # read -> the nvargus pipeline stalled -> the image froze and the bot stopped.
-    # So everything runs in THIS one thread: read the camera + run lane EVERY
-    # frame (smooth steering), and run the heavy detectors (apriltags, YOLO) only
-    # every Nth frame to keep the average loop rate up. No cross-thread GIL fight.
+    # The CONTROL path is single-threaded: this loop reads the camera (single
+    # nvargus reader), runs lane EVERY frame (smooth steering) and the AprilTag
+    # detector every Nth frame (cheap C, fast). The ONLY work that is off-loaded
+    # to another thread is the heavy duckie model (see _detection_worker): it ran
+    # ~0.3 s/frame on the Nano CPU and, inline, dropped the loop rate until the
+    # camera pipeline stalled (a freeze). The worker is safe because (a) it never
+    # touches I2C — the main loop stays the lone wheel/LED writer, so it can't
+    # recreate the OSError(121) bus crash; (b) onnxruntime/cv2.dnn RELEASE the GIL
+    # during inference, so a slow detection does not block this loop's camera
+    # read / steering; (c) the camera is still read by THIS thread only — the
+    # worker consumes already-captured frames from a queue, never the device.
     _detectors_enabled = bool(timings.get('detectors_enabled', True))
-    _detect_every = max(1, int(timings.get('detect_every', 3)))   # apriltags every Nth frame
-    _yolo_every   = int(timings.get('yolo_every', 0))             # YOLO every Nth detect pass (0=off)
+    _detect_every = max(1, int(timings.get('detect_every', 3)))   # apriltags + duck-enqueue every Nth frame
+    # Other-bot soft-stop thresholds: a Vehicle AprilTag (another Duckiebot)
+    # that is close and roughly centred ahead. Calibration-free — est_distance_m
+    # is inf without camera intrinsics, so we gate primarily on apparent tag size
+    # (a near bot's plate is big) plus lateral position. Tune on the bot.
+    _bot_tag_min_px     = float(timings.get('bot_stop_tag_px', 55))
+    _bot_center_frac    = float(timings.get('bot_stop_center_frac', 0.33))
+    _bot_stop_dist_m    = float(timings.get('bot_stop_distance_m', 0.45))
     tag_obs = []          # last apriltag detections (persist between detect frames)
-    raw_dets = None       # last YOLO detections
+    raw_dets = None       # last duckie detections (from the worker; persists between updates)
+    veh_dets = []         # last other-bot (blue) detections; persists between detect frames
     frame_count = 0
     intersection_since: Optional[float] = None  # first STOPPED at this junction (wait-timeout anchor)
 
@@ -311,8 +349,9 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
         nowp = time.time()
         if nowp - _last_err_print[0] > 2.0:
             _last_err_print[0] = nowp
-            print(f"[agent] {where} error (continuing):")
-            _tb.print_exc()
+            print(f"[agent] {where} error (continuing):", flush=True)
+            _tb.print_exc(file=sys.stdout)
+            sys.stdout.flush()
 
     def _safe_set_wheels(left, right):
         """The ONLY way the agent writes wheel speeds: serialised with the LED
@@ -325,6 +364,44 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                 wheels.set_wheels_speed(left, right)
         except Exception:
             _log_perception_error('wheels.set_wheels_speed')
+
+    # DECOUPLED duckie detector (the reference's proven real-hardware pattern).
+    # The main loop hands the latest frame to _det_q (non-blocking, maxsize=1 so a
+    # backlog can't build); this worker pulls it, runs the model, and publishes the
+    # result to _det_store. The control loop only READS _det_store — it never calls
+    # detect(), so heavy inference never blocks steering, and this thread issues no
+    # I2C (the watchdog's I2C writes are what crashed us before; this one has none).
+    _det_q: "queue.Queue" = queue.Queue(maxsize=1)
+    _det_store = {'dets': None}
+    _det_lock = threading.Lock()
+
+    def _detection_worker():
+        while not stop_event.is_set() and _cam_state['alive']:
+            try:
+                frame_rgb = _det_q.get(timeout=0.3)
+            except queue.Empty:
+                continue
+            try:
+                d = obj.detect(frame_rgb)
+            except Exception:
+                _log_perception_error('obj.detect')
+                continue
+            if d is not None:           # None = internally skipped frame
+                with _det_lock:
+                    _det_store['dets'] = d
+
+    def _bot_ahead(signs, frame_w) -> bool:
+        """True if another Duckiebot (a Vehicle AprilTag) is close and roughly
+        centred ahead — i.e. directly in our path, so we soft-stop behind it."""
+        half = frame_w / 2.0
+        for o, sem in signs:
+            if sem.tag_type != 'Vehicle':
+                continue
+            if abs(o.center_xy[0] - half) > frame_w * _bot_center_frac:
+                continue   # off to the side, not in our lane
+            if o.side_length_px >= _bot_tag_min_px or o.est_distance_m < _bot_stop_dist_m:
+                return True
+        return False
 
     def _cam_watchdog():
         while not stop_event.is_set() and _cam_state['alive']:
@@ -373,6 +450,18 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     else:
         print("[agent] camera watchdog OFF (single-thread I2C; matches reference design)")
 
+    # Start the duckie detector worker only if the model actually loaded. If it
+    # didn't (no onnxruntime/cv2.dnn, missing model), the bot still lane-follows
+    # and obeys signs; it just won't brake for duckies — no crash, no freeze.
+    if _duck_mode == 'model':
+        print("[agent] duckie detection: decoupled model thread (backend=%s)" % obj._backend)
+        threading.Thread(target=_detection_worker, daemon=True, name='DuckDetect').start()
+    elif _duck_mode == 'hsv':
+        err = f" (model unavailable: {obj.load_error})" if obj is not None else ""
+        print("[agent] duckie detection: inline HSV+shape, no model on this platform" + err)
+    else:
+        print("[agent] duckie detection OFF; other-bot stop via Vehicle tags still active")
+
     try:
         while not stop_event.is_set():
             if _cam_state['restarting']:
@@ -398,30 +487,52 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
             now = time.time()
             frame_count += 1
 
-            # Heavy detectors, throttled, INLINE (single thread -> no GIL fight
-            # with the camera read). tag_obs/raw_dets persist between detect frames.
+            # AprilTags run INLINE every Nth frame (cheap C, fast); the heavy
+            # duckie model runs in the worker thread instead. On the same cadence
+            # we hand the latest frame to the worker (non-blocking — drop if it's
+            # still busy on the previous one). tag_obs persists between detect frames.
             if _detectors_enabled and (frame_count % _detect_every == 0):
                 try:
                     tag_obs = tags.detect(bgr) or []
                 except Exception:
-                    pass
-                if obj is not None and _yolo_every > 0 and (frame_count % (_detect_every * _yolo_every) == 0):
+                    _log_perception_error('tags.detect')
+                if _duck_mode == 'model':
                     try:
-                        d = obj.detect(rgb)
-                        if d is not None:
-                            raw_dets = d
-                    except Exception:
+                        _det_q.put_nowait(rgb)   # worker resizes + infers off-thread
+                    except queue.Full:
                         pass
+                elif _duck_mode == 'hsv':
+                    try:
+                        raw_dets = detect_duckies_hsv(bgr, _duck_hsv_cfg)  # cheap, inline
+                    except Exception:
+                        _log_perception_error('duck_hsv')
+                if _bot_hsv:
+                    try:
+                        veh_dets = detect_vehicles_hsv(bgr, _bot_hsv_cfg)  # blue other-bot, inline
+                    except Exception:
+                        _log_perception_error('vehicle_hsv')
+            # Model path: pull the worker's most recent detections (non-blocking).
+            # Stays the previous value between updates; the debounce adds hysteresis.
+            if _duck_mode == 'model':
+                with _det_lock:
+                    _latest_dets = _det_store['dets']
+                if _latest_dets is not None:
+                    raw_dets = _latest_dets
 
             signs = [(o, lookup(o.id)) for o in tag_obs if lookup(o.id) is not None]
-            # Obstacle debounce. YOLO runs only every Nth frame (obj.detect returns
-            # None in between) and a close duckie can dip below the down-tilted
-            # camera; treating those blank frames as "clear" made SOFT_STOP flip
-            # back to DRIVE every other frame, so the bot crept straight INTO the
-            # duckie. Instead: remember the last frame a duckie was actually seen,
-            # and consider one present for obstacle_clear_grace_s afterwards — so we
-            # resume only once it has truly been gone for the whole grace window.
-            if raw_dets is not None and should_stop_for_obstacle(raw_dets, frame_h)[0]:
+            # Obstacle debounce. Detection updates asynchronously and a close
+            # duckie can dip below the down-tilted camera; treating those blank
+            # frames as "clear" made SOFT_STOP flip back to DRIVE every other frame,
+            # so the bot crept straight INTO the duckie. Instead: remember the last
+            # frame an obstacle was actually seen and consider one present for
+            # obstacle_clear_grace_s afterwards — resume only once it has truly been
+            # gone for the whole grace window. TWO obstacle sources feed this:
+            #   * a duckie from the model (should_stop_for_obstacle), and
+            #   * another Duckiebot close + centred ahead (_bot_ahead, via its
+            #     Vehicle AprilTag) — "soft-stop when it sees a bot in its path".
+            duck_stop = bool(raw_dets) and should_stop_for_obstacle(raw_dets, frame_h)[0]
+            bot_stop  = _bot_ahead(signs, bgr.shape[1]) or bool(veh_dets)
+            if duck_stop or bot_stop:
                 obstacle_last_seen = now
             obstacle_present = (now - obstacle_last_seen) < timings.get('obstacle_clear_grace_s', 1.0)
             obstacles = _OBSTACLE_BLOCK if obstacle_present else []
@@ -655,11 +766,12 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                     ],
                     'light': {'color': light_color, 'armed': light.armed},
                     'red_line': red_line,
-                    'obstacle_stop': should_stop_for_obstacle(obstacles, frame_h)[0],
+                    'obstacle_stop': obstacle_present,
+                    'bot_ahead': bot_stop,
                     'obstacles': [
                         {'bbox': [int(v) for v in bbox],
                          'cls': int(cls), 'score': round(float(score), 2)}
-                        for bbox, score, cls in (obstacles or [])
+                        for bbox, score, cls in ((raw_dets or []) + (veh_dets or []))
                     ],
                     'lane': {
                         'error':    round(float(lane.last_debug_info.get('lateral_error', 0.0)), 4),

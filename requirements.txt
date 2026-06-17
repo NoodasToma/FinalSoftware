@@ -1,5 +1,12 @@
 # Requirements for running simulation on your computer
 # Install: pip install -r requirements.txt
+#
+# NOTE: these are for the SIM / dev machine. The real bot (Jetson, Python 3.6) is
+# set up separately — in particular pupil-apriltags must be installed SYSTEM-WIDE
+# (the task runs as root and can't see a --user install): run
+#   bash duckiebot/apriltags/install.sh
+# on the bot. onnxruntime has no aarch64/cp36 wheel for the bot, so on hardware the
+# duckie detector falls back to the dependency-free HSV detector automatically.
 flask
 opencv-python<4.10
 numpy>=1.24.0,<2

@@ -42,15 +42,48 @@ detectors_enabled: true
 # runs EVERY frame). Higher = smoother steering, slower sign reaction. 3 ≈ good.
 detect_every: 3
 
-# YOLO obstacle detection on the Jetson Nano: DISABLED (0 = never run).
-# On GPU it ran the device out of memory building the TensorRT engine (freeze);
-# on CPU its numpy post-processing holds the Python GIL for ~1-2 s per inference,
-# freezing the loop. The Nano can't run this model alongside real-time control.
-# With it off the bot still does EVERYTHING except duckie-obstacle braking:
-# lane-follow, stop/yield/4-way signs, traffic lights, stop+turn, and other-robot
-# precedence (all via the cheap AprilTag detector). Set to e.g. 5 to re-enable
-# YOLO once every 5 detect passes if you accept the stutter.
-yolo_every: 0
+# Duckie obstacle detection on the Jetson Nano: ENABLED, but run OFF the control
+# loop. The earlier disable was because YOLO ran INLINE: ~0.3 s/frame of CPU
+# inference dropped the loop rate until the camera pipeline stalled (a freeze),
+# and on GPU the TensorRT build ran the device out of memory. Both are now
+# avoided: the agent runs detection in a DECOUPLED background thread (the proven
+# reference design) that (a) never issues I2C, so it can't recreate the
+# OSError(121) bus crash, and (b) lets onnxruntime release the GIL during
+# inference, so a slow detection no longer blocks steering; and real_server forces
+# CPU inference (OBJDET_CPU=1), so there is no TensorRT-build OOM. The model is
+# tiny (~7 MB). Set to false to fall back to lane+signs only (no duckie braking).
+object_detection: true
+
+# Other-bot soft-stop: brake when another Duckiebot (a Vehicle AprilTag) is close
+# and centred ahead. Calibration-free — gated on the plate's apparent size in
+# pixels (a near bot's plate is big) plus how centred it is. Tune on the bot:
+#   bot brakes too late / too close  -> LOWER bot_stop_tag_px
+#   bot brakes for bots off to the side or far away -> RAISE bot_stop_tag_px,
+#                                                      LOWER bot_stop_center_frac
+bot_stop_tag_px: 55          # min Vehicle-tag side length (px) to count as "close"
+bot_stop_center_frac: 0.33   # tag centre must be within ±33% of frame width of centre
+bot_stop_distance_m: 0.45    # used instead of px when the camera is calibrated
+
+# Duckie detection on the bot is the dependency-free HSV+shape detector (the
+# trained model can't load on OpenCV 4.1.1). The big false-positive class is large
+# yellow ROAD MARKINGS near intersections; require the duck to be roughly IN-PATH
+# (central) and tall (close) to reject them. Tune live from the /video HUD:
+#   stops for yellow markings off to the side -> RAISE cx_margin_frac
+#   misses a real duck slightly off-centre    -> LOWER cx_margin_frac
+#   stops for a duck too far / small          -> RAISE min_height_frac
+duck_hsv_cfg:
+  cx_margin_frac: 0.25       # box centre must be within central 50% of width
+  min_height_frac: 0.13      # box >= 13% of frame height (a close duck, not a flat marking)
+  max_aspect: 1.10           # KEY anti-dash gate: a standing duck is taller-than-wide (w/h ~0.7);
+                             # the dashed yellow LANE LINE segments are wider-than-tall (~1.5+),
+                             # so capping aspect ~1.1 rejects the dashes while keeping ducks.
+
+# Other-bot detection: the local bots are BLUE with no AprilTag, so detect by blue
+# colour (a close bot ahead is a big blue blob). Tune if it over/under-triggers.
+bot_hsv: true
+bot_hsv_cfg:
+  min_bbox_area_frac: 0.020  # bot must fill >= 2% of the frame (i.e. be close)
+  cx_margin_frac: 0.20
 
 # DRIVE speed factor. The agent commands wheels = lane_output * base_speed * 2.
 # base_speed=0.5 -> factor 1.0 = PASS-THROUGH, i.e. apply the lane agent's

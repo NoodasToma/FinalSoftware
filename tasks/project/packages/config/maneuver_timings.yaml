@@ -4,6 +4,10 @@ light_arm_distance_m: 1.5
 light_wait_timeout_s: 12
 line_straight_distance_m: 0.6
 obstacle_clear_grace_s: 1.0
+# Run the duckie obstacle detector (decoupled background thread). true here so the
+# sim exercises the same SOFT_STOP path as the bot; set false to disable braking
+# for duckies. Other-bot soft-stop (Vehicle AprilTag) is independent of this flag.
+object_detection: true
 ramp_max_step: 0.05
 sign_cooldown: 4
 sign_react_distance_m: 1.5
