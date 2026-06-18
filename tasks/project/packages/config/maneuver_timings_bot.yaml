@@ -80,10 +80,28 @@ duck_hsv_cfg:
 
 # Other-bot detection: the local bots are BLUE with no AprilTag, so detect by blue
 # colour (a close bot ahead is a big blue blob). Tune if it over/under-triggers.
+#
+# The test room has BLUE/PURPLE furniture (a chair), pink/purple walls and people
+# in view, and the loose defaults latched onto the chair as a phantom "bot ahead"
+# -> spurious SOFT_STOP as the bot approached a sign ("weird behaviour after
+# detecting the tag"). The fix below keys on the ONE thing that separates a real
+# Duckiebot ahead from background furniture: a bot in our lane sits LOW on the road
+# (its blue body is in the bottom of the down-tilted view), while chairs/walls/
+# people sit HIGH (the chair measured at cyFrac ~0.10). So require the blue blob to
+# be low (min_cy_frac), large/close (min_bbox_area_frac), solid (min_fill) and a
+# VIVID blue (narrow hue, higher S/V) so muted purple walls don't count.
+# Set `bot_hsv: false` to disable colour-based other-bot detection entirely
+# (the Vehicle-AprilTag stop path still works for bots that carry a tag plate).
 bot_hsv: true
 bot_hsv_cfg:
-  min_bbox_area_frac: 0.020  # bot must fill >= 2% of the frame (i.e. be close)
-  cx_margin_frac: 0.20
+  blue_lower: [100, 110, 60]   # vivid blue only: higher S/V drops muted wall/floor tones
+  blue_upper: [120, 255, 255]  # cut hue at 120 (was 130) so purple/violet walls aren't "blue"
+  top_ignore_frac: 0.45        # blank the top ~45% (horizon, chairs, standing people)
+  min_cy_frac: 0.55            # KEY gate: blob CENTRE must be in the bottom ~45% — i.e. a bot
+                               # actually on the road ahead, not furniture up near the horizon
+  min_bbox_area_frac: 0.045    # >= 4.5% of frame: only a genuinely CLOSE bot, not a distant blob
+  min_fill: 0.45               # solid blue body, not scattered specular/glare pixels
+  cx_margin_frac: 0.20         # roughly ahead in our lane, not off to the side
 
 # DRIVE speed factor. The agent commands wheels = lane_output * base_speed * 2.
 # base_speed=0.5 -> factor 1.0 = PASS-THROUGH, i.e. apply the lane agent's
