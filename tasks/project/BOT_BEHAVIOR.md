@@ -64,9 +64,23 @@ starting values at startup and prints what it applied:
 
 | File | Used by | Contains |
 |---|---|---|
-| `tasks/project/packages/config/maneuver_timings_bot.yaml` | bot only (merged over the base) | PWM-corrected turn arcs + real-tile tick counts (below) |
+| `tasks/project/packages/config/maneuver_timings_bot.yaml` | bot only (merged over the base) | PWM-corrected turn arcs + real-tile tick counts (below); uncalibrated-camera sign gates (`sign_react_min_px`, `sign_stop_px`, `line_straight_px`); duck/red/hold knobs |
 | `config/lane_servoing_config_bot.yaml` | bot only (replaces the lane config) | gentle starting gains (`p 0.25, d 0.1, base 0.3`) |
+| `config/lane_servoing_hsv_config_bot.yaml` | bot only (applied via `set_hsv_bounds` at startup) | venue lane HSV (wider yellow so the chunky dashes register) + chunky-dash edge fill |
 | `config/camera_intrinsics.yaml` | bot (read by the tag detector) | all-commented until measured → bot runs in safe *uncalibrated* mode |
+
+**Uncalibrated-camera sign behaviour (no intrinsics ⇒ tag distance is ∞).** With no
+metric distance, the bot gates sign reactions on the AprilTag's apparent **pixel
+size** instead (rock-solid, grows monotonically as it nears the sign), because the
+painted stop line here is desaturated orange at an angle and the red-line detector
+can't see it. `sign_react_min_px` (start APPROACH when the tag is this big ≈ near),
+`line_straight_px` (creep DEAD STRAIGHT at the sign — the lane markings curve away
+at the junction so lane-following would drift the bot off it), `sign_stop_px` (stop
+= AT the line). Backstop: if the tag clips off the top of the frame (sign overhead)
+before reaching `sign_stop_px`, the lost-sign commit stops the bot at the line too.
+Calibrate from the live `/telemetry` (each tag's `side_px`) — see §1b step 6.
+Calibrating camera intrinsics (step 5) restores the metric path and these are
+ignored.
 
 All three deploy with `launch.py --run` (the deploy tarball = `tasks/<task>/packages`
 + `config/` + `servers/<task>` — note `duckiebot/…/camera_config.yaml` is NOT
@@ -116,6 +130,14 @@ starting points and run the one-trial correction below.
    * Arc too **wide** (overshoots the far lane) → **lower** that direction's
      `*_inner_speed` by ~0.03; too **tight** → raise it. Re-measure once.
    * `straight_ticks`: landed short/long of one tile → scale linearly.
+   * **Post-turn drift** (turns ~90° fine, then drifts off the outgoing lane as
+     DRIVE resumes) → the arc ends inside the markingless junction box, so the
+     lane PD locks a stray edge and unwinds the turn. `turn_exit_ticks` (292 on
+     the bot) drives straight out of the box onto the outgoing lane's real
+     markings first: exits **short** of the lane → raise it; **overruns** the
+     lane → lower it. Per-direction overrides `turn_left_exit_ticks` /
+     `turn_right_exit_ticks` exist if one arc lands deeper than the other; set 0
+     to disable the exit entirely.
 
 **First-run protocol:** bot on a straight with no signs → clean lane-following →
 add one stop sign + red line → stop-at-line + pause + turn → then the light →
@@ -178,7 +200,7 @@ Below, **bold** = what you should observe.
 | 5 | **Reaching the red line** | The painted line fills the bottom of the frame → **stops AT the line** (primary trigger). Backups: tag distance < `stop_distance_m`, or sign-lost commit after `stop_commit_grace_s`. |
 | 6 | **At the line (stop sign)** | **Full stop for `stop_wait_seconds` (1.5 s)** — always, before even checking right-of-way. |
 | 7 | **Choosing the move** | Legal set = intersection of every sign seen on the approach (§2). **Random choice** among legal turns. No intersection sign seen → all three legal. |
-| 8 | **Executing the turn** | **Gradual car-like arc** (forward+right tight-ish; left wide; straight crosses the box), timed by **encoder ticks** on both platforms. Yellow blinker on the turning side (2 Hz); straight = no blinker. Lands on the outgoing lane and resumes DRIVE. |
+| 8 | **Executing the turn** | **Gradual car-like arc** (forward+right tight-ish; left wide; straight crosses the box), timed by **encoder ticks** on both platforms, then a short **straight exit** (`turn_exit_ticks`) that carries the bot out of the markingless box onto the outgoing lane before the PD resumes (else it would lock a stray edge and unwind the turn). Yellow blinker on the turning side (2 Hz); straight = no blinker. Lands on the outgoing lane and resumes DRIVE. |
 | 9 | **Just after the intersection** | `sign_cooldown` (4 s): signs are ignored so the bot doesn't re-trigger on the sign it just obeyed. Obstacle stops still act normally (red lines only matter while APPROACHing, so driving over the box's far line does nothing). |
 | 10 | **t-light-ahead sign** | Approach + stop at the light's line like a stop sign, and the **colour detector arms**. |
 | 11 | **Light is RED** | Holds at the line in **WAIT**, back LEDs red, until green. The red is latched (`light_was_red`) so a glance away can't unlatch it — only seeing **green** releases. |
@@ -217,6 +239,7 @@ Below, **bold** = what you should observe.
 | `turn_right_*` | 0.36/0.45, 530 ticks | right arc R≈0.3 m | " |
 | `turn_left_*` | 0.39/0.45, 850 ticks | left arc R≈0.6 m | " |
 | `straight_ticks` | 777 | cross the box (~1.1 m) | " |
+| `turn_exit_ticks` | 300 (bot 292) | straight exit out of the box after a turn (~0.44 m); per-dir overrides `turn_{left,right}_exit_ticks`; 0 disables | " |
 | `sign_cooldown` | 4 s | ignore signs after a maneuver | " |
 | obstacle thresholds | bottom 60% of frame, or 4% of area | "duckie in my path" | `obstacles.py` |
 | red-line ROI / pixels | bottom 22% of frame, ≥400 px red | "I am AT the line" | `traffic_light_hsv.yaml` (`line_*`) |

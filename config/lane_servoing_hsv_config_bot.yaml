@@ -1,0 +1,35 @@
+# REAL-BOT lane HSV overlay — applied ONLY by real_server.py at startup via
+# visual_servoing_activity.set_hsv_bounds(). The sim keeps the base
+# config/lane_servoing_hsv_config.yaml (its colours differ from this venue), so
+# this file never affects simulation.
+#
+# WHY: on the real bot the yellow dashed centre line was under-detected — the base
+# yellow_lower_h=22 clips the NEAR dashes, which (measured on-site, 640x480) sit at
+# hue 13-24 (they read more orange the closer they are; far dashes are ~30-36). So
+# the bot saw almost no yellow and steered off the white edge only ("relies too
+# much on white, doesn't see yellow"). Lowering the yellow hue floor to 14 (still
+# clear of red/orange, which is h<=10) recovers the near dashes. S/V floors kept
+# low enough for the measured S 75+, V 85+.
+#
+# Tune on the bot from the /video HUD (yellow_mask / white_mask) under venue light:
+#   yellow line not detected / dashes missed  -> LOWER yellow_lower_h / _s / _v
+#   road or skin reads as yellow              -> RAISE yellow_lower_s / _v
+#   background (walls/floor) reads as white    -> RAISE white_lower_v, LOWER white_upper_s
+yellow_lower_h: 15      # above red (0-10) and the orange floor; base 22 missed near dashes
+yellow_lower_s: 70
+yellow_lower_v: 80
+yellow_upper_h: 40      # far dashes top ~h36; 40 stays clear of green (green_lower_h=40)
+yellow_upper_s: 255
+yellow_upper_v: 255
+
+# White: tighter than base (v floor 134 -> 155, s ceil 70 -> 55) so the bright
+# PINKISH background/wall stops flooding the white mask. When background reads as
+# "white", the one-line lane-centre estimate is garbage and the bot steers across
+# the lane to the opposite side. The white edge line is bright+desaturated enough
+# to survive v>=155; the pinkish wall (higher S, lower V) is rejected.
+white_lower_h: 0
+white_lower_s: 0
+white_lower_v: 155
+white_upper_h: 179
+white_upper_s: 55
+white_upper_v: 255

@@ -39,17 +39,36 @@ _DEFAULT = {
                                      # fills its (possibly slanted) rect (~0.9-1.0); a rounded
                                      # rubber duck does not (~0.6-0.8). Rotation-invariant, so it
                                      # rejects perspective-slanted dashes too. Key discriminator.
+    # Bottom-square reject — THE gate for venues whose centre dashes are CHUNKY/
+    # SQUARE (aspect ~1.0) instead of thin: the nearest such dash fills the bottom
+    # of the frame as an ~square blob touching the bottom edge (measured FP:
+    # [143,393,228,480], aspect 0.977, y2=480). A standing rubber duck is taller-
+    # than-wide (aspect ~0.68-0.85), so rejecting blobs that TOUCH the bottom edge
+    # AND are squarish drops the dash while keeping a real close duck.
+    'reject_bottom_square': True,
+    'bottom_touch_frac': 0.985,      # y2 >= this*h => the blob runs off the bottom edge (a road dash)
+    'bottom_square_aspect': 0.88,    # ... and aspect >= this (squarish). real duck 0.84 < 0.88 survives.
     'score_area_norm': 8000.0,       # bbox area mapped to score 1.0 (proximity proxy)
 }
 
 
-def detect_duckies_hsv(bgr, cfg=None):
-    """bgr: HxWx3 BGR frame. Returns [((x1,y1,x2,y2), score, 0), ...]."""
+def detect_duckies_hsv(bgr, cfg=None, lane_xs=None):
+    """bgr: HxWx3 BGR frame. Returns [((x1,y1,x2,y2), score, 0), ...].
+
+    lane_xs: optional list of full-frame x positions of the detected YELLOW lane
+    (centre) line, from the lane follower. The yellow dashed centre line is the
+    SAME colour as a duck, and in some venues the dashes are chunky/square so the
+    aspect/solidity gates can't reject them. But a dash sits ON the lane line and
+    a real duck obstacle sits OFF it, so a yellow blob whose centre-x lands within
+    `duck_lane_exclude_px` of the lane line is treated as the lane and skipped.
+    Pass None (or leave the list empty) to disable this gate."""
     if bgr is None or bgr.size == 0:
         return []
     c = dict(_DEFAULT)
     if cfg:
         c.update(cfg)
+    lane_excl = float(c.get('duck_lane_exclude_px', 0))
+    lane_xs = [lx for lx in (lane_xs or []) if lx is not None]
     h, w = bgr.shape[:2]
 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -93,6 +112,8 @@ def detect_duckies_hsv(bgr, cfg=None):
             continue
         if cx < w * c['cx_margin_frac'] or cx > w * (1 - c['cx_margin_frac']):
             continue                                           # hugging an edge
+        if lane_excl > 0 and lane_xs and min(abs(cx - lx) for lx in lane_xs) < lane_excl:
+            continue                                           # on the yellow lane line = a dash
         if barea < w * h * c['min_bbox_area_frac']:            # too small
             continue
         if aspect > c['max_aspect'] or aspect < c['min_aspect']:
@@ -101,6 +122,9 @@ def detect_duckies_hsv(bgr, cfg=None):
             continue
         if solidity > c['max_solidity']:                       # solid filled quad = painted marking
             continue
+        if c.get('reject_bottom_square') and y2 >= h * c['bottom_touch_frac'] \
+                and aspect >= c['bottom_square_aspect']:
+            continue                                           # chunky near dash running off the bottom edge
 
         score = min(1.0, barea / c['score_area_norm'])
         out.append(((x1, y1, x2, y2), float(score), 0))

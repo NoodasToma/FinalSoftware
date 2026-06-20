@@ -9,13 +9,17 @@
 base_speed: 0.25
 p_gain: 0.4
 d_gain: 0.15
-center_offset: 0.12   # bias toward yellow so it rides the middle, not the white edge
-max_steer: 0.55       # match visual_lane_servoing: enough steering authority for curves
+center_offset: 0.05   # mild bias toward yellow. LOWERED from 0.12: with the chunky-fill the
+                      # yellow mask is now strong, so 0.12 pushed the bot ONTO/OVER the yellow
+                      # centre line into the opposite lane ("crosses to the opposite side").
+max_steer: 0.55       # enough steering authority for curves
 detection_threshold: 100
 recovery_speed: 0.18
 recovery_turn: 0.08
 recovery_max_frames: 12
-curve_boost: 1.8
-curve_speed: 0.1
-curve_threshold: 400
+curve_boost: 1.5      # outer-wheel boost through a curve (was a buggy hard-coded 5 for left only)
+curve_speed: 0.12     # slow through curves so it tracks the bend instead of drifting wide
+curve_threshold: 110  # px shift (far vs near slice) that counts as a curve. LOWERED from 400
+                      # (which never triggered, so curves were unhandled and the bot drifted
+                      # wide and crossed the outer line). ~110 fires on real bends, not jitter.
 steering_threshold: 0.15

@@ -138,9 +138,15 @@ class LaneServoingAgent:
         left  = speed - steering
         right = speed + steering
 
+        # On a detected curve, give the OUTER wheel extra drive so the bot actually
+        # tracks the bend instead of drifting wide and crossing the outer line.
+        # steering>0 turns left (outer wheel = right); steering<0 turns right
+        # (outer wheel = left). Both use curve_boost — the old code multiplied the
+        # right wheel by a hard-coded 5 for left turns only, an asymmetric slam that
+        # could fling the bot across the lane.
         if is_curve and abs(steering) > self.steering_threshold:
             if steering > 0:
-                right *= 5
+                right *= self.curve_boost
             else:
                 left  *= self.curve_boost
 

@@ -42,6 +42,56 @@ detectors_enabled: true
 # runs EVERY frame). Higher = smoother steering, slower sign reaction. 3 ≈ good.
 detect_every: 3
 
+# React-distance gate for an UNCALIBRATED camera (the bot's default — no
+# camera_intrinsics, so AprilTag est_distance is inf). With no metric distance we
+# gate on the tag's apparent SIZE: a sign only counts as "close enough to act on"
+# once its tag36h11 plate is at least this many pixels on a side. Below it the bot
+# keeps lane-following and ignores the (still-distant) sign.
+#
+# WHY: a 0.065 m tag decodes from 1.5-3 m away; without this gate the bot reacted
+# the instant it first decoded the tag (metres out) and stopped/turned far short
+# of the red line ("detected too far, turned without reaching the line").
+#
+# CALIBRATE on the bot — the live /telemetry shows each tag's side_px: drive at a
+# stop sign and note side_px when the bot's front reaches the red line, then set
+# this a bit BELOW that so it reacts close with just enough room to stop.
+#   reacts too far / too early           -> RAISE
+#   drives past the sign without stopping -> LOWER
+# 0 disables the gate (legacy react-on-sight). The proper long-term fix is camera
+# intrinsics (BOT_BEHAVIOR §1b.5), which restores metric react_distance_m.
+# (Measured on-site: a 0.065 m tag is ~18 px at ~1 m, ~28 px at ~0.75 m, ~44 px
+#  when the bot's front is AT the line.)
+#
+# Set to 35 (~0.55 m) per the operator's steer "limit AprilTag range so it only
+# reacts when already near the line": the bot lane-follows normally until the sign
+# is close, THEN runs a SHORT approach. This keeps the disruptive approach phase
+# tiny so the bot doesn't leave the lane chasing a far sign.
+sign_react_min_px: 35
+
+# STOP gate (uncalibrated camera). APPROACH->STOPPED fires when the stop/junction
+# tag reaches this many px on a side — i.e. the bot is AT the line. This REPLACES
+# the painted-red-line trigger on the bot, because this venue's stop line is
+# DESATURATED ORANGE at a perspective angle and never forms a clean red band (the
+# red-line/band detectors can't see it), while the AprilTag is rock-solid and its
+# size grows monotonically toward the line. Backstop: if the tag clips off the TOP
+# of the frame (sign goes overhead) before reaching this size, the overhead-commit
+# (stop_commit_grace_s, gated on sign_react_min_px) stops the bot at the line too.
+#   stops short of the line  -> RAISE
+#   overshoots into the box  -> LOWER
+# 0 = use the red-line/metric stop path instead (sim, or a bot with a clean line).
+# Set to 44 = the measured tag size when the bot's front is AT the line, so it
+# stops ON the line instead of overshooting into the box.
+sign_stop_px: 44
+
+# STRAIGHT-CREEP gate. DISABLED (0): the dead-straight creep made the bot IGNORE
+# the lane during approach and drive OFF-ROAD ("violates lane servoing rules and
+# goes offroad"). With the sign now detected late/close (sign_react_min_px) the
+# approach is short, so the bot just keeps LANE-FOLLOWING right up to the line and
+# stops on tag size — respecting the lane the whole way. Re-enable (>0) only if a
+# junction's lane paint genuinely ends well before the line and the bot needs a
+# final blind straight nudge.
+line_straight_px: 0
+
 # Duckie obstacle detection on the Jetson Nano: ENABLED, but run OFF the control
 # loop. The earlier disable was because YOLO ran INLINE: ~0.3 s/frame of CPU
 # inference dropped the loop rate until the camera pipeline stalled (a freeze),
@@ -74,9 +124,20 @@ bot_stop_distance_m: 0.45    # used instead of px when the camera is calibrated
 duck_hsv_cfg:
   cx_margin_frac: 0.25       # box centre must be within central 50% of width
   min_height_frac: 0.13      # box >= 13% of frame height (a close duck, not a flat marking)
-  max_aspect: 1.10           # KEY anti-dash gate: a standing duck is taller-than-wide (w/h ~0.7);
-                             # the dashed yellow LANE LINE segments are wider-than-tall (~1.5+),
-                             # so capping aspect ~1.1 rejects the dashes while keeping ducks.
+  max_aspect: 1.10           # a standing duck is taller-than-wide (w/h ~0.7). NOTE: this venue's
+                             # dashes are CHUNKY/SQUARE (aspect ~1.0), not the usual thin (~1.5+)
+                             # dashes, so aspect alone can't reject them -> see bottom-square gate.
+  # KEY anti-dash gate HERE: the nearest chunky dash fills the bottom of the frame
+  # as a ~square blob touching the bottom edge (measured FP [143,393,228,480],
+  # aspect 0.98). Reject blobs that touch the bottom edge AND are squarish; a real
+  # close duck is taller-than-wide (aspect ~0.84 < 0.88) so it survives.
+  bottom_touch_frac: 0.985
+  bottom_square_aspect: 0.88
+  # Lane-line exclusion is DISABLED (0): the yellow_xs only cover mid-frame y and a
+  # real duck sitting ON the centre line is a genuine obstacle we MUST stop for, so
+  # rejecting on-line blobs risks driving over a duck. The bottom-square gate above
+  # handles the dash false-positive without that risk.
+  duck_lane_exclude_px: 0
 
 # Other-bot detection: the local bots are BLUE with no AprilTag, so detect by blue
 # colour (a close bot ahead is a big blue blob). Tune if it over/under-triggers.
@@ -96,12 +157,15 @@ bot_hsv: true
 bot_hsv_cfg:
   blue_lower: [100, 110, 60]   # vivid blue only: higher S/V drops muted wall/floor tones
   blue_upper: [120, 255, 255]  # cut hue at 120 (was 130) so purple/violet walls aren't "blue"
-  top_ignore_frac: 0.45        # blank the top ~45% (horizon, chairs, standing people)
-  min_cy_frac: 0.55            # KEY gate: blob CENTRE must be in the bottom ~45% — i.e. a bot
-                               # actually on the road ahead, not furniture up near the horizon
-  min_bbox_area_frac: 0.045    # >= 4.5% of frame: only a genuinely CLOSE bot, not a distant blob
-  min_fill: 0.45               # solid blue body, not scattered specular/glare pixels
-  cx_margin_frac: 0.20         # roughly ahead in our lane, not off to the side
+  top_ignore_frac: 0.35        # blank the top ~35% (lowered from 45% so a bot a bit further
+                               # ahead — which sits higher in the down-tilted view — is seen)
+  min_cy_frac: 0.42            # blob CENTRE in the bottom ~58%. LOWERED from 0.55 to detect bots
+                               # EARLIER (a farther bot sits higher in frame); still well below the
+                               # test-room chair (measured cyFrac ~0.10) so furniture stays rejected.
+  min_bbox_area_frac: 0.020    # >= 2% of frame (was 4.5%): the MAIN "detect sooner" lever — a
+                               # smaller blue blob = a more DISTANT bot, so we brake earlier.
+  min_fill: 0.45               # solid blue body, not scattered specular/glare pixels (anti-furniture)
+  cx_margin_frac: 0.22         # roughly ahead in our lane, not off to the side
 
 # DRIVE speed factor. The agent commands wheels = lane_output * base_speed * 2.
 # base_speed=0.5 -> factor 1.0 = PASS-THROUGH, i.e. apply the lane agent's
@@ -116,6 +180,13 @@ turn_left_ticks: 829
 
 straight_ticks: 758
 
+# Post-turn straight exit out of the intersection box before the lane PD resumes
+# (see base maneuver_timings.yaml). Base 300 ticks scaled ×0.975 for real tiles.
+# Calibrate with the turn arcs: if the bot exits the box short of the outgoing
+# lane raise this; if it overruns the lane lower it.
+turn_exit_ticks: 292
+turn_exit_seconds: 0.8
+
 # TIME-BASED turn durations — used as a fallback when the wheel encoders aren't
 # counting (so a turn can't block forever / freeze the agent). Tune these on the
 # bot if the encoders are dead and the turn angle is off: bigger = turns more.
@@ -124,3 +195,9 @@ turn_left_seconds: 2.6
 turn_right_seconds: 2.4
 straight_seconds: 2.0
 turn_timeout_s: 6.0
+
+# During a turn the bot now keeps its camera + object detector live and HOLDS for
+# an obstacle in the intersection box (instead of driving through blind). Cap the
+# total hold so a false-positive detection can't strand the bot mid-junction: once
+# this many seconds of holding accumulate, the turn completes regardless.
+maneuver_hold_max_s: 3.0

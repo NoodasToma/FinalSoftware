@@ -28,3 +28,11 @@ turn_right_outer_speed: 0.45
 turn_right_ticks: 530
 turn_seconds: 0.45
 turn_ticks: 118
+# After a turn's arc, drive straight this many outer-wheel ticks to clear the
+# intersection box and land on the outgoing lane's real markings BEFORE the lane
+# PD resumes (inside the box there are no clean markings, so the PD otherwise
+# chases a stray edge and unwinds the turn -> the bot drifts off-lane). ~675
+# ticks/m, so 300 ~= 0.44 m. Set 0 to disable. turn_exit_seconds is the
+# encoderless time fallback.
+turn_exit_ticks: 300
+turn_exit_seconds: 0.8

@@ -17,7 +17,9 @@ from tasks.project.packages.perception import (
     is_at_stop_line,
     merge_turn_constraints,
     should_brake_for_yellow,
-    detect_red_line,
+    red_line_pixel_count,
+    red_line_threshold,
+    red_band_metrics,
 )
 from tasks.project.packages.perception.duck_hsv import detect_duckies_hsv, detect_vehicles_hsv
 from tasks.project.packages.sign_registry import lookup
@@ -41,6 +43,24 @@ _HSV_PATH = os.path.join(
 
 _STOP_OR_YIELD = {'stop', 'yield'}
 _T_LIGHT_AHEAD = 't-light-ahead'
+# Junction signs that, like a stop/yield sign, mean "an intersection is ahead":
+# approach, stop at the red line, then take a legal turn. WHICH turns are legal
+# comes from the sign itself via merge_turn_constraints (e.g. right-T-intersect ->
+# {straight, right}). Previously only stop/yield/light signs triggered the
+# APPROACH->STOPPED->TURN flow, so at a junction marked ONLY by a T/4-way sign the
+# bot drove straight through without stopping or turning. (oneway-*/do-not-enter
+# are turn DIRECTIVES, not junction-stop markers: they constrain the chosen turn
+# when present but don't by themselves trigger the stop.)
+_INTERSECTION_KINDS = {'4-way-intersect', 'T-intersection',
+                       'right-T-intersect', 'left-T-intersect'}
+
+
+def _triggers_approach(kind) -> bool:
+    """A sign whose presence means we should run the intersection flow
+    (APPROACH -> stop at the line -> turn): a stop/yield sign, a junction sign,
+    or a traffic light ahead."""
+    return (kind in _STOP_OR_YIELD or kind in _INTERSECTION_KINDS
+            or kind == _T_LIGHT_AHEAD)
 
 _LED_FRONT_LEFT, _LED_FRONT_RIGHT = 0, 2
 _LED_BACK_LEFT,  _LED_BACK_RIGHT  = 3, 4
@@ -122,7 +142,8 @@ def _direction_of(state: State) -> str:
 
 def _derive_event(state, signs, obstacles, frame_h, lane_mask,
                   ignore_signs=False, stop_distance_m=0.25,
-                  at_red_line=False, react_distance_m=1.5) -> Optional[str]:
+                  at_red_line=False, react_distance_m=1.5,
+                  react_min_px=0, stop_min_px=0, red_band=False) -> Optional[str]:
     if state in (State.DRIVE, State.APPROACH):
         stop, _ = should_stop_for_obstacle(obstacles, frame_h)
         if stop:
@@ -133,16 +154,24 @@ def _derive_event(state, signs, obstacles, frame_h, lane_mask,
         # are still right next to the sign we just obeyed, so without this we'd
         # re-trigger on it and stop/turn over and over (a 360 spin in place).
         if not ignore_signs:
-            # React only to signs governing the junction we're ARRIVING at
-            # (within react_distance_m). Tags can decode from 3+ m away, and
-            # starting the slow APPROACH creep that early both crawls and reacts
-            # to intersections beyond the next one. est inf (uncalibrated
-            # camera) keeps the old react-on-sight behavior.
+            # React only to signs governing the junction we're ARRIVING at.
+            # Tags can decode from 3+ m away, and starting the slow APPROACH
+            # creep that early both crawls forever and reacts to intersections
+            # beyond the next one.
+            #   * Calibrated camera (metric est_distance): gate on react_distance_m.
+            #   * Uncalibrated camera (est_distance == inf, the bot's default
+            #     mode): there is NO metric distance, so gate on the tag's
+            #     apparent SIZE instead — a far sign is a tiny tag; only once it
+            #     grows past react_min_px is it close enough to act on. Without
+            #     this the bot reacted to a 0.065 m tag the instant it decoded
+            #     (metres away) and stopped/turned far short of the line.
+            #     react_min_px <= 0 restores the old react-on-sight behaviour.
             def near(o):
                 if o is None:          # offline/logic tests pass bare semantics
                     return True
-                return (o.est_distance_m < react_distance_m
-                        or o.est_distance_m == float('inf'))
+                if o.est_distance_m != float('inf'):
+                    return o.est_distance_m < react_distance_m
+                return react_min_px <= 0 or o.side_length_px >= react_min_px
             kinds = {sem.kind for o, sem in signs if near(o)}
             if kinds & _STOP_OR_YIELD:
                 return 'see_stop_or_yield'
@@ -151,17 +180,43 @@ def _derive_event(state, signs, obstacles, frame_h, lane_mask,
                 # line, where STOPPED waits for green. (Previously only stop/yield
                 # signs triggered APPROACH, so the bot drove straight through lights.)
                 return 'see_light'
+            if kinds & _INTERSECTION_KINDS:
+                # A junction sign (T / 4-way) with no stop/yield/light still marks an
+                # intersection: approach, stop at the red line, then take a legal turn
+                # (the sign supplies which turns are legal in STOPPED).
+                return 'see_intersection'
         return None
 
     if state == State.APPROACH:
-        # PRIMARY stop trigger: the painted red stop line reaching the bottom of
-        # the frame (we are physically AT the line). This is how real Duckiebots
-        # stop at intersections; the tag-distance check below is the backup for
-        # lines that are missing/washed out.
-        if at_red_line:
+        # Apparent size of the closest relevant (stop/junction/light) sign in view.
+        vis_px = max((o.side_length_px for o, sem in signs
+                      if _triggers_approach(sem.kind)), default=0)
+        if stop_min_px > 0:
+            # UNCALIBRATED PROXIMITY MODE (the bot's default — no camera
+            # intrinsics). Two ways to know we're AT the line, whichever first:
+            #  1) the ROBUST red BAND (a wide horizontal red bar across the lane)
+            #     once the sign is near enough to be THIS junction's (react gate).
+            #     This is the preferred trigger — it stops the bot ON the painted
+            #     line. The raw red-pixel count is NOT used (the venue's red/orange
+            #     markings make it spike far from any line); the band's structure
+            #     test rejects that noise.
+            #  2) FAILSAFE: the tag grew past stop_min_px (very close) but no band
+            #     was seen — stop anyway so a washed-out/!missing line can't make
+            #     the bot drive through the intersection.
+            if vis_px >= react_min_px and red_band:
+                return 'at_stop_line'
+            if vis_px >= stop_min_px:
+                return 'at_stop_line'
+            return None
+        # CALIBRATED / CLEAN-LINE MODE (the sim, or a bot with intrinsics +
+        # reliable red line): the painted red line is the PRIMARY trigger (we are
+        # physically AT the line), with the metric tag-distance proxy as backup.
+        # Accept either the raw count or the structural band (a clean sim line
+        # satisfies both).
+        if at_red_line or red_band:
             return 'at_stop_line'
         for obs, sem in signs:
-            if sem.kind in _STOP_OR_YIELD or sem.kind == _T_LIGHT_AHEAD:
+            if _triggers_approach(sem.kind):
                 if is_at_stop_line(obs, lane_mask, stop_distance_m):
                     return 'at_stop_line'
         return None
@@ -239,6 +294,26 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     """
     timings = timings_override if timings_override is not None else _load_timings()
     hsv_cfg = _load_hsv_cfg()
+    # Per-venue red overrides (band thresholds + tighter red) live in the bot
+    # timings so the shared traffic_light_hsv.yaml (sim) stays untouched.
+    hsv_cfg.update(timings.get('red_line_cfg') or {})
+    _red_line_thr = red_line_threshold(hsv_cfg)
+    # Uncalibrated-camera react gate: minimum tag side length (px) for a sign to
+    # count as "close enough to act on" when there is no metric distance. 0 keeps
+    # the legacy react-on-sight behaviour. Tuned on the bot (see BOT_BEHAVIOR §1b).
+    _sign_react_min_px = float(timings.get('sign_react_min_px', 0))
+    # Uncalibrated-camera STOP gate: tag side length (px) at which the bot is AT
+    # the stop line and should stop. >0 switches APPROACH->STOPPED to proximity
+    # (tag size) instead of the red-line detector, which is unreliable in venues
+    # with red/orange road markings. 0 keeps the red-line/metric stop path.
+    _sign_stop_min_px = float(timings.get('sign_stop_px', 0))
+    # Uncalibrated-camera STRAIGHT-CREEP gate: once the relevant sign's tag is at
+    # least this many px (i.e. we're near the junction), creep DEAD STRAIGHT to the
+    # line instead of lane-following — the lane markings curve away at the junction
+    # box and following them drifts the bot off the sign (and the tag then never
+    # grows to the stop size, so it never stops). The metric equivalent is
+    # line_straight_distance_m, which is dead on an inf-distance camera. 0 disables.
+    _line_straight_px = float(timings.get('line_straight_px', 0))
 
     lane  = LaneServoingAgent(config_path=lane_config_path)
     light = TrafficLightDetector()
@@ -291,6 +366,7 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     signs_at_intersection: list = []
     ignore_signs_until = 0.0
     approach_closest = float('inf')   # closest a stop/yield/light sign got this APPROACH
+    approach_max_px = 0               # biggest a stop/yield/light tag got this APPROACH (px proxy)
     relevant_lost_at: Optional[float] = None  # when the approached sign left the frame
     stopped_at: Optional[float] = None  # when we entered STOPPED (for the full-stop pause)
     obstacle_last_seen = -1e9   # wall-clock of the last positive obstacle detection (debounce)
@@ -462,6 +538,64 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     else:
         print("[agent] duckie detection OFF; other-bot stop via Vehicle tags still active")
 
+    # Per-iteration callback used DURING a blocking maneuver (turn/straight) so the
+    # bot keeps SEEING instead of driving the intersection blind: read a frame,
+    # refresh the /video HUD, run the object detector (throttled), and return True
+    # if an obstacle is in the box (the maneuver then HOLDS, not abandons, and
+    # resumes when clear). Runs in THIS (main) thread => still the single I2C
+    # writer. Never raises (a bad frame must not freeze or crash the turn).
+    _tick_st = {'n': 0, 'obstacle': False}
+
+    def _maneuver_tick():
+        try:
+            ok2, bgr2 = camera.read()
+        except Exception:
+            return _tick_st['obstacle']
+        if not ok2 or bgr2 is None:
+            return _tick_st['obstacle']
+        _cam_state['last_good'] = time.time()
+        if frame_observer is not None:
+            try:
+                frame_observer(bgr2)
+            except Exception:
+                pass
+        _tick_st['n'] += 1
+        if _tick_st['n'] % _detect_every == 0:
+            dets, veh = [], []
+            if _duck_mode == 'model':
+                try:
+                    _det_q.put_nowait(cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB))
+                except queue.Full:
+                    pass
+                with _det_lock:
+                    dets = _det_store['dets'] or []
+            elif _duck_mode == 'hsv':
+                try:
+                    dets = detect_duckies_hsv(bgr2, _duck_hsv_cfg) or []
+                except Exception:
+                    dets = []
+            if _bot_hsv:
+                try:
+                    veh = detect_vehicles_hsv(bgr2, _bot_hsv_cfg) or []
+                except Exception:
+                    veh = []
+            duck_stop = bool(dets) and should_stop_for_obstacle(dets, bgr2.shape[0])[0]
+            _tick_st['obstacle'] = bool(duck_stop or veh)
+            if observer is not None:
+                try:
+                    observer({
+                        'state': state.name,
+                        'obstacle_stop': _tick_st['obstacle'],
+                        'obstacles': [
+                            {'bbox': [int(v) for v in bb], 'cls': int(cl),
+                             'score': round(float(sc), 2)}
+                            for bb, sc, cl in (list(dets) + list(veh))
+                        ],
+                    })
+                except Exception:
+                    pass
+        return _tick_st['obstacle']
+
     try:
         while not stop_event.is_set():
             if _cam_state['restarting']:
@@ -503,7 +637,12 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                         pass
                 elif _duck_mode == 'hsv':
                     try:
-                        raw_dets = detect_duckies_hsv(bgr, _duck_hsv_cfg)  # cheap, inline
+                        # Pass the detected yellow lane-line x's so the detector can
+                        # reject yellow DASHES (on the line) vs real ducks (off it).
+                        # last_debug_info is from the prior frame's lane pass — the
+                        # centre line barely moves frame-to-frame, so that's fine.
+                        _lane_xs = lane.last_debug_info.get('yellow_xs') or []
+                        raw_dets = detect_duckies_hsv(bgr, _duck_hsv_cfg, lane_xs=_lane_xs)
                     except Exception:
                         _log_perception_error('duck_hsv')
                 if _bot_hsv:
@@ -578,42 +717,68 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
             # we still stop -- once the intersection is identified a real bot
             # commits to stopping; it doesn't drive through just because the sign
             # left the camera frame. Reset whenever we're not approaching.
+            # Red stop-line detector (PRIMARY stop trigger on the bot). Compute
+            # the raw red-pixel count so it can be surfaced in telemetry for live
+            # tuning — on an uncalibrated camera this is how we tell "stopped
+            # short of the line" (count never reached the threshold) from a false
+            # stop, without re-running the HSV pass.
             try:
-                red_line = detect_red_line(bgr, hsv_cfg)
+                red_px = red_line_pixel_count(bgr, hsv_cfg)
+                red_line = red_px >= _red_line_thr
             except Exception:
                 _log_perception_error('detect_red_line')
-                red_line = False
+                red_px, red_line = 0, False
+            # Robust red-line: a wide HORIZONTAL red BAND across the lane (rejects
+            # the venue's scattered red/orange markings that fool the raw count).
+            # This is what lets the bot drive all the way TO the painted line on an
+            # uncalibrated camera instead of stopping early on red noise.
+            try:
+                red_band, red_band_diag = red_band_metrics(bgr, hsv_cfg)
+            except Exception:
+                _log_perception_error('red_band_metrics')
+                red_band, red_band_diag = False, {'rows': 0, 'rows_frac': 0.0, 'row_max': 0.0}
 
             relevant_visible = False
             if state == State.APPROACH:
                 for o, sem in signs:
                     intersection_signs[o.id] = sem    # remember every sign this approach
-                    if sem.kind in _STOP_OR_YIELD or sem.kind == _T_LIGHT_AHEAD:
+                    if _triggers_approach(sem.kind):
                         relevant_visible = True
                         approach_closest = min(approach_closest, o.est_distance_m)
+                        approach_max_px = max(approach_max_px, o.side_length_px)
                 if relevant_visible:
                     relevant_lost_at = None
                 elif relevant_lost_at is None:
                     relevant_lost_at = now
             else:
                 approach_closest = float('inf')
+                approach_max_px = 0
                 relevant_lost_at = None
 
             event = _derive_event(state, signs, obstacles, frame_h, lane_mask,
                                   ignore_signs=ignore_signs,
                                   stop_distance_m=timings.get('stop_distance_m', 0.25),
                                   at_red_line=red_line,
-                                  react_distance_m=timings.get('sign_react_distance_m', 1.5))
-            # Backup commit: the sign we were approaching left the frame after
-            # getting close AND stayed gone for a grace period AND no red line has
-            # appeared. The grace keeps the painted line the PRIMARY trigger — the
-            # tag usually decodes its last ~0.3 m before the line, and the line
-            # enters the bottom ROI moments later; without the grace this commit
-            # fired the instant the tag dropped and stopped the bot short of the
-            # line. Only if the line truly never shows (missing/washed out) does
-            # this stop the bot near where the sign was.
+                                  react_distance_m=timings.get('sign_react_distance_m', 1.5),
+                                  react_min_px=_sign_react_min_px,
+                                  stop_min_px=_sign_stop_min_px,
+                                  red_band=red_band)
+            # Backup commit — also the ROBUST "at the line" path on the bot. As the
+            # bot reaches the stop line the sign goes OVERHEAD: its big tag rises
+            # and clips off the TOP of the frame, so the tag disappears right when
+            # we're at the line. Once the intersection is identified a real bot
+            # commits to stopping; it doesn't coast through just because the tag
+            # left view. "Got close enough that disappearing means we're there" is:
+            #   * metric distance (calibrated): approach_closest < stop_commit_distance_m
+            #   * tag pixels (uncalibrated bot): the tag grew past the REACT size
+            #     (react_min_px) before vanishing — i.e. it went overhead, not a
+            #     momentary far mis-detect. (Using react, not the full stop size, so
+            #     a sign that clips out before reaching stop_px still stops us.)
+            committed = (approach_closest < timings.get('stop_commit_distance_m', 0.5)
+                         or (_sign_react_min_px > 0
+                             and approach_max_px >= _sign_react_min_px))
             if (state == State.APPROACH and not event and not relevant_visible
-                    and approach_closest < timings.get('stop_commit_distance_m', 0.5)
+                    and committed
                     and relevant_lost_at is not None
                     and now - relevant_lost_at > timings.get('stop_commit_grace_s', 1.0)):
                 event = 'at_stop_line'
@@ -646,7 +811,9 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                     current_speed, timings.get('approach_creep_speed', 0.12),
                     timings['ramp_max_step']
                 )
-                if approach_closest < timings.get('line_straight_distance_m', 0.6):
+                _near_line = (approach_closest < timings.get('line_straight_distance_m', 0.6)
+                              or (_line_straight_px > 0 and approach_max_px >= _line_straight_px))
+                if _near_line:
                     # Final stretch: the lane markings end at the intersection box,
                     # so lane-steering here yanks the heading right when we want to
                     # roll straight up to the painted line. Creep dead straight.
@@ -706,16 +873,20 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
 
             elif state in (State.TURN_LEFT, State.TURN_RIGHT, State.STRAIGHT_THROUGH):
                 _set_blinker(leds, _direction_of(state), now)
-                # The turn BLOCKS this loop (no camera reads) for a few seconds by
-                # design; flag it so the watchdog doesn't read the resulting stale
-                # last_good as a camera stall and abort the turn mid-intersection.
+                # The turn no longer drives BLIND: _maneuver_tick keeps the camera +
+                # object detector live during the maneuver and reports obstacles so
+                # the turn HOLDS (not abandons) for a duckie/bot in the box and
+                # resumes when clear. Still flag 'maneuvering' so the watchdog
+                # doesn't misread the (now tick-refreshed) last_good as a stall.
                 _cam_state['maneuvering'] = True
                 try:
                     {
                         State.TURN_LEFT:        turn_left,
                         State.TURN_RIGHT:       turn_right,
                         State.STRAIGHT_THROUGH: straight_through,
-                    }[state](wheels, stop_event, timings)
+                    }[state](wheels, stop_event, timings,
+                             tick=_maneuver_tick, set_wheels=_safe_set_wheels,
+                             hold_max_s=timings.get('maneuver_hold_max_s', 3.0))
                 except Exception:
                     # A transient I2C glitch mid-turn aborts THIS maneuver, but must
                     # not crash the agent thread; next_state below still advances.
@@ -766,6 +937,12 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                     ],
                     'light': {'color': light_color, 'armed': light.armed},
                     'red_line': red_line,
+                    'red_line_px': red_px,
+                    'red_line_thr': _red_line_thr,
+                    'red_band': red_band,
+                    'red_band_rows': red_band_diag.get('rows'),
+                    'red_band_rows_frac': red_band_diag.get('rows_frac'),
+                    'red_band_row_max': red_band_diag.get('row_max'),
                     'obstacle_stop': obstacle_present,
                     'bot_ahead': bot_stop,
                     'obstacles': [

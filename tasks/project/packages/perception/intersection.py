@@ -48,23 +48,28 @@ _RED_LINE_DEFAULTS = {
 }
 
 
-def detect_red_line(bgr_frame, cfg: Optional[dict] = None) -> bool:
-    """Is a red STOP LINE directly in front of the bot (i.e. are we AT the line)?
+def red_line_threshold(cfg: Optional[dict] = None) -> int:
+    """The red-pixel count in the bottom ROI that means 'AT the line'
+    (line_min_px), after applying any per-environment override in cfg."""
+    c = dict(_RED_LINE_DEFAULTS)
+    if cfg:
+        c.update({k: v for k, v in cfg.items() if k in _RED_LINE_DEFAULTS})
+    return int(c["line_min_px"])
 
-    Duckietown paints red stop lines across the lane at intersections; the
-    hardware-correct stop trigger is seeing that line fill the bottom of the
-    camera frame. With the camera pitched ~14 deg down, the bottom ~22% of rows
-    only shows road within ~0.3 m of the bot, so this fires exactly when the
-    front of the bot reaches the line — independent of sign-tag decode range.
-    Red blobs elsewhere (octagon signs, traffic-light lenses) sit higher in the
-    frame and never enter this ROI. Config keys (red_* shared with
-    traffic_light_hsv.yaml, plus line_roi_frac / line_min_px) make it tunable
-    for real-bot lighting.
-    """
+
+def red_line_pixel_count(bgr_frame, cfg: Optional[dict] = None) -> int:
+    """How many red pixels are in the bottom-of-frame stop-line ROI.
+
+    Split out from detect_red_line so callers can both decide (count >=
+    threshold) AND surface the raw count for live tuning — on an uncalibrated
+    bot the red line is the PRIMARY stop trigger, so seeing the actual count vs
+    line_min_px is how you tell 'stopped short of the line' (count never reached
+    threshold) from a false stop (count spikes on non-line red) and tune the
+    red_* / line_min_px knobs for the venue. Returns 0 for an empty frame."""
     import cv2
 
     if bgr_frame is None or getattr(bgr_frame, "size", 0) == 0:
-        return False
+        return 0
     c = dict(_RED_LINE_DEFAULTS)
     if cfg:
         c.update({k: v for k, v in cfg.items() if k in _RED_LINE_DEFAULTS})
@@ -78,7 +83,88 @@ def detect_red_line(bgr_frame, cfg: Optional[dict] = None) -> bool:
                      np.array([c["red_upper_h1"], hi_s, hi_v], np.uint8))
     m2 = cv2.inRange(hsv, np.array([c["red_lower_h2"], lo_s, lo_v], np.uint8),
                      np.array([c["red_upper_h2"], hi_s, hi_v], np.uint8))
-    return int(cv2.countNonZero(m1) + cv2.countNonZero(m2)) >= int(c["line_min_px"])
+    return int(cv2.countNonZero(m1) + cv2.countNonZero(m2))
+
+
+def detect_red_line(bgr_frame, cfg: Optional[dict] = None) -> bool:
+    """Is a red STOP LINE directly in front of the bot (i.e. are we AT the line)?
+
+    Duckietown paints red stop lines across the lane at intersections; the
+    hardware-correct stop trigger is seeing that line fill the bottom of the
+    camera frame. With the camera pitched ~14 deg down, the bottom ~22% of rows
+    only shows road within ~0.3 m of the bot, so this fires exactly when the
+    front of the bot reaches the line — independent of sign-tag decode range.
+    Red blobs elsewhere (octagon signs, traffic-light lenses) sit higher in the
+    frame and never enter this ROI. Config keys (red_* shared with
+    traffic_light_hsv.yaml, plus line_roi_frac / line_min_px) make it tunable
+    for real-bot lighting.
+    """
+    return red_line_pixel_count(bgr_frame, cfg) >= red_line_threshold(cfg)
+
+
+_RED_BAND_DEFAULTS = {
+    # TIGHTER red than the raw-count detector: the venue's orange road markings
+    # leak into the wide red range and cause the count to spike far from any line,
+    # so the band test uses a narrow, saturated red.
+    "red_lower_h1": 0, "red_upper_h1": 8, "red_lower_h2": 172, "red_upper_h2": 180,
+    "red_lower_s": 150, "red_upper_s": 255, "red_lower_v": 80, "red_upper_v": 255,
+    "band_roi_frac": 0.32,      # bottom fraction of the frame to scan
+    "band_center_frac": 0.70,   # only the central X of the width (the lane ahead, not side markings)
+    "band_row_min_frac": 0.50,  # a ROW counts as "on the bar" if >= this fraction of the centre window is red
+    "band_min_rows_frac": 0.14, # >= this fraction of ROI rows must be "on the bar" => a real horizontal BAND
+    "band_max_rows_frac": 0.92, # ... but not essentially the WHOLE ROI (that's a red floor /全-red noise)
+}
+
+
+def red_band_metrics(bgr_frame, cfg: Optional[dict] = None):
+    """Detect the painted RED STOP LINE as a wide HORIZONTAL BAND (not a raw pixel
+    count). In a venue full of red/orange markings the plain pixel count spikes
+    far from any line; a real stop line is different in STRUCTURE: across the
+    bottom-centre of the frame, many CONSECUTIVE-ish rows are red across most of
+    the lane width. Scattered dashes / diagonal hatching never fill rows that way.
+
+    Returns (present: bool, diag: dict) where diag has:
+      rows       — number of rows in the ROI that are 'on the bar'
+      rows_frac  — rows / ROI_row_count
+      row_max    — the single widest row's red coverage (fraction of the window)
+    row_max is the key tuning signal: it only approaches ~1.0 when red actually
+    spans the lane (i.e. the bot is AT the line), and stays low over orange noise.
+    """
+    import cv2
+
+    c = dict(_RED_BAND_DEFAULTS)
+    if cfg:
+        c.update({k: v for k, v in cfg.items() if k in _RED_BAND_DEFAULTS})
+    diag = {"rows": 0, "rows_frac": 0.0, "row_max": 0.0}
+    if bgr_frame is None or getattr(bgr_frame, "size", 0) == 0:
+        return False, diag
+
+    h, w = bgr_frame.shape[:2]
+    y0 = int(h * (1.0 - float(c["band_roi_frac"])))
+    cw = float(c["band_center_frac"])
+    x0 = int(w * (1.0 - cw) / 2.0)
+    x1 = int(w * (1.0 + cw) / 2.0)
+    roi = bgr_frame[y0:, x0:x1]
+    if roi.size == 0:
+        return False, diag
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    s_lo, s_hi = c["red_lower_s"], c["red_upper_s"]
+    v_lo, v_hi = c["red_lower_v"], c["red_upper_v"]
+    m1 = cv2.inRange(hsv, np.array([c["red_lower_h1"], s_lo, v_lo], np.uint8),
+                     np.array([c["red_upper_h1"], s_hi, v_hi], np.uint8))
+    m2 = cv2.inRange(hsv, np.array([c["red_lower_h2"], s_lo, v_lo], np.uint8),
+                     np.array([c["red_upper_h2"], s_hi, v_hi], np.uint8))
+    mask = m1 | m2
+    win_w = mask.shape[1]
+    if win_w == 0 or mask.shape[0] == 0:
+        return False, diag
+    row_cov = mask.sum(axis=1) / (255.0 * win_w)     # per-row red coverage [0..1]
+    on_bar = int(np.count_nonzero(row_cov >= float(c["band_row_min_frac"])))
+    rows_frac = on_bar / float(mask.shape[0])
+    diag = {"rows": on_bar, "rows_frac": round(rows_frac, 3),
+            "row_max": round(float(row_cov.max()), 3)}
+    present = (float(c["band_min_rows_frac"]) <= rows_frac <= float(c["band_max_rows_frac"]))
+    return present, diag
 
 
 def merge_turn_constraints(observed_signs: List[SignSemantic]) -> Set[str]:

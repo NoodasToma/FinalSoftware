@@ -17,6 +17,12 @@ sys.path.insert(0, project_root)
 # it never blocks driving. Must be set BEFORE ObjectDetectionAgent is imported.
 os.environ.setdefault('OBJDET_CPU', '1')
 
+# numpy 1.19.5 (installed so onnxruntime can run the YOLO model on the bot) crashes
+# with "Illegal instruction" on this Jetson unless OpenBLAS is pinned to the ARMv8
+# kernel — its CPU autodetection picks an unsupported kernel intermittently. Must
+# be set BEFORE the first `import numpy` in the process (so before cv2 too).
+os.environ.setdefault('OPENBLAS_CORETYPE', 'ARMV8')
+
 from flask import Flask, Response, jsonify
 import numpy as np
 import cv2
@@ -59,6 +65,35 @@ def _bot_lane_config_path():
     """config/lane_servoing_config_bot.yaml if it exists, else None (default)."""
     path = os.path.join(project_root, 'config', 'lane_servoing_config_bot.yaml')
     return path if os.path.isfile(path) else None
+
+
+def _apply_bot_lane_hsv():
+    """Apply the BOT-only lane HSV overlay (config/lane_servoing_hsv_config_bot.yaml)
+    over the shared lane HSV, by calling the lane detector's set_hsv_bounds(). The
+    lane HSV is module-global in visual_servoing_activity (loaded once from the base
+    file), and that base is the SIM's calibration — so a per-venue bot override must
+    be applied here, at the hardware entry point, not by editing the shared file.
+    Returns the keys applied (for the startup log), or None if no overlay file."""
+    path = os.path.join(project_root, 'config', 'lane_servoing_hsv_config_bot.yaml')
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        ov = yaml.safe_load(fh) or {}
+    if not ov:
+        return None
+    from tasks.visual_lane_servoing.packages import visual_servoing_activity as _vsa
+    cur = _vsa.get_hsv_bounds()
+    cur.update(ov)
+    _vsa.set_hsv_bounds(
+        [cur['yellow_lower_h'], cur['yellow_lower_s'], cur['yellow_lower_v']],
+        [cur['yellow_upper_h'], cur['yellow_upper_s'], cur['yellow_upper_v']],
+        [cur['white_lower_h'],  cur['white_lower_s'],  cur['white_lower_v']],
+        [cur['white_upper_h'],  cur['white_upper_s'],  cur['white_upper_v']],
+    )
+    # Fill chunky-dash interiors on the bot (this venue's centre dashes are fat
+    # squares the edge-AND gate would otherwise gut). Sim leaves this off.
+    _vsa.set_chunky_fill(True)
+    return sorted(ov)
 
 app        = Flask(__name__)
 camera     = None
@@ -235,6 +270,20 @@ def video():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+@app.route('/raw')
+def raw():
+    """The most recent RAW camera frame, NO HUD overlay — for off-board perception
+    tuning (lane/duck/red-line HSV) where the HUD boxes + blacked-out strips would
+    pollute the pixels. Single JPEG, not a stream."""
+    frame = _latest_frame
+    if frame is None:
+        frame = _waiting_frame()
+    ok, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok:
+        return ('', 503)
+    return Response(jpeg.tobytes(), mimetype='image/jpeg')
+
+
 @app.route('/shutdown')
 def shutdown():
     shutdown_cleanup(wheels, camera, stop_event)
@@ -287,8 +336,10 @@ def main():
     print('\n[4/4] Starting agent...', flush=True)
     timings, overlay_keys = _load_bot_timings()
     lane_cfg = _bot_lane_config_path()
+    hsv_keys = _apply_bot_lane_hsv()
     print(f"  bot timing overrides: {overlay_keys or 'none'}", flush=True)
     print(f"  bot lane config: {lane_cfg or 'default (sim-tuned!)'}", flush=True)
+    print(f"  bot lane HSV overrides: {hsv_keys or 'none'}", flush=True)
     stop_event.clear()
 
     def _run_agent():

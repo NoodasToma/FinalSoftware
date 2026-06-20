@@ -17,6 +17,15 @@ _yellow_upper = np.array([_h.get('yellow_upper_h', 0),  _h.get('yellow_upper_s',
 _white_lower = np.array([_h.get('white_lower_h', 0),   _h.get('white_lower_s', 0), _h.get('white_lower_v', 0)])
 _white_upper = np.array([_h.get('white_upper_h', 0), _h.get('white_upper_s', 0), _h.get('white_upper_v', 0)])
 
+# Chunky-dash fill. The yellow/white masks AND the Sobel EDGE mask (mask_mag) with
+# colour, which keeps thin dashes whole but ERASES the flat low-gradient INTERIOR
+# of a chunky/square dash (leaving a 1-2 px outline) — so on venues whose centre
+# dashes are fat squares the lane follower under-counts yellow and falls back to
+# the white edge. When this flag is on, the edge mask is DILATED so the interior
+# between a dash's two edges is filled before the colour AND. Default OFF: the sim
+# (thin dashes) is byte-identical; real_server flips it on for the bot only.
+_fill_chunky = False
+
 def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     h, w = image.shape[:2]
 
@@ -31,6 +40,10 @@ def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
     mask_mag = (Gmag > 50).astype(np.uint8)
 
+    # Optionally dilate the edge mask so a chunky dash's flat interior (where the
+    # gradient is ~0) is filled in, instead of being erased by the colour AND.
+    edge = cv2.dilate(mask_mag, np.ones((9, 9), np.uint8)) if _fill_chunky else mask_mag
+
     mask_yellow_color = cv2.inRange(imghsv, _yellow_lower, _yellow_upper)
     mask_white_color  = cv2.inRange(imghsv, _white_lower,  _white_upper)
 
@@ -39,13 +52,13 @@ def detect_lane_markings(image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     mask_horizon[int(h * 0.4):, :] = 1
 
     # yellow = yellow color + edge + horizon (no half restriction so detection survives drifts)
-    mask_yellow = (mask_horizon * mask_mag
+    mask_yellow = (mask_horizon * edge
                    * (mask_yellow_color > 0)).astype(float)
 
     # white = white color + edge + horizon, exclude far-left strip
     mask_white_area = np.ones((h, w), dtype=np.uint8)
     mask_white_area[:, : w // 4] = 0
-    mask_white = (mask_horizon * mask_white_area * mask_mag
+    mask_white = (mask_horizon * mask_white_area * edge
                   * (mask_white_color > 0)).astype(float)
 
     return mask_yellow, mask_white
@@ -57,6 +70,13 @@ def set_hsv_bounds(yellow_lower, yellow_upper, white_lower, white_upper):
     _yellow_upper = np.array(yellow_upper)
     _white_lower  = np.array(white_lower)
     _white_upper  = np.array(white_upper)
+
+def set_chunky_fill(on):
+    """Enable/disable dilating the edge mask to keep chunky-dash interiors (see
+    _fill_chunky). real_server turns this on for the bot; the sim leaves it off."""
+    global _fill_chunky
+    _fill_chunky = bool(on)
+
 
 def get_hsv_bounds():
     return {
