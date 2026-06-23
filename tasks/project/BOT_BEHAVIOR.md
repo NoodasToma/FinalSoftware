@@ -191,6 +191,24 @@ The brain is the FSM in `states.py`:
 with `WAIT` (red light / give-way) and `SOFT_STOP` (obstacle) branching off.
 Below, **bold** = what you should observe.
 
+> **⚠️ Two real-bot behaviour switches (config, default differs sim vs bot) changed
+> rows 4–9 below for the robot — the sim still does the classic flow:**
+> 1. **No sign-approach slowdown** (`approach_creep: false`, bot overlay). The bot
+>    keeps **following the lane at normal speed** when a sign is in view; it does NOT
+>    decelerate/creep/brake on sight. It only ACTS on the sign at the **commit point**:
+>    the sign is no longer visible after getting close (tag goes overhead ≈ the red
+>    line is reached), the tag is **very close** (`sign_stop_px`), or a red line/band
+>    is seen. So `APPROACH` on the bot is just "a sign is pending, still driving."
+> 2. **Lane-follow turns** (`turn_mode: lane_follow`, bot overlay). At the commit the
+>    bot applies the sign's RULES (stop + pause, right-of-way, legal-turn choice) then
+>    **resumes visual lane-following** through the junction instead of an open-loop
+>    arc — "follow the road with changed rules." The chosen legal turn is still
+>    computed + shown in `/telemetry`; only the MOTION is closed-loop on the lane.
+>
+> The **sim** keeps `approach_creep: true` + `turn_mode: maneuver` (the smooth-stop +
+> random-arc rubric demo). Flip either in `maneuver_timings.yaml` / the dashboard
+> config editor to see the bot behaviour in the sim.
+
 | # | Situation | Expected behaviour |
 |---|---|---|
 | 1 | **Open lane** | DRIVE: lane-follows centered (PD on the yellow/white masks), **ramping smoothly** to `base_speed` (no jump-starts: `ramp_max_step` per loop). LEDs off. |

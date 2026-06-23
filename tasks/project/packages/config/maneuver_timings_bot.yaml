@@ -1,6 +1,20 @@
 # REAL-BOT overlay for maneuver_timings.yaml — applied ONLY by real_server.py
 # (merged over the base file at startup; the sim never reads this file).
 #
+# ============================================================================
+# AGENT SELECTION
+# sign_agent: true  -> run the REFERENCE's working sign-detection agent
+#   (tasks/project/packages/agent_signs.main: lane servoing + the ported
+#   KvatiTown SignBehaviorFSM). It triggers on a painted RED STOP LINE reached
+#   WITH a saved AprilTag, and EXECUTES the intersection turn OPEN-LOOP (fixed
+#   wheel speeds for a fixed number of frames, LANE IGNORED) so the sign decision
+#   wins over lane-following — the fix for "chose left but the lane took it right".
+#   Sign behaviour is tuned via the keys in sign_behavior_config.py; override any
+#   of them under a `sign_config:` mapping here (e.g. sign_config: {intersect_left_frames: 60}).
+# sign_agent: false / unset -> the project's own agent.main (default).
+# Toggle live in the dashboard config editor + Restart.
+sign_agent: true
+#
 # Why these differ from the base (sim-verified) values:
 #
 # 1) pwm_min ratio compression. The real DaguWheelsDriver maps a wheel command
@@ -68,20 +82,27 @@ detect_every: 3
 # tiny so the bot doesn't leave the lane chasing a far sign.
 sign_react_min_px: 35
 
-# STOP gate (uncalibrated camera). APPROACH->STOPPED fires when the stop/junction
-# tag reaches this many px on a side — i.e. the bot is AT the line. This REPLACES
-# the painted-red-line trigger on the bot, because this venue's stop line is
-# DESATURATED ORANGE at a perspective angle and never forms a clean red band (the
-# red-line/band detectors can't see it), while the AprilTag is rock-solid and its
-# size grows monotonically toward the line. Backstop: if the tag clips off the TOP
-# of the frame (sign goes overhead) before reaching this size, the overhead-commit
-# (stop_commit_grace_s, gated on sign_react_min_px) stops the bot at the line too.
-#   stops short of the line  -> RAISE
-#   overshoots into the box  -> LOWER
+# The bot acts on a sign at ONLY two moments (no early triggers): the tag is VERY
+# CLOSE (sign_stop_px below) or the tag is NO LONGER VISIBLE after getting close
+# (the lost-sign overhead commit — stop_commit_grace_s / sign_react_min_px). The
+# red-BAND trigger is turned OFF here so the venue's red/orange markings can't stop
+# the bot early; the bot keeps lane-following until genuinely at the sign.
+sign_use_red_band: false
+
+# STOP gate (uncalibrated camera) — the "TOO CLOSE" trigger: stop when the
+# stop/junction tag reaches this many px on a side. The PRIMARY stop on this bot is
+# the tag-gone (lost-sign overhead) commit below; this is the backstop for "the tag
+# is huge and still in view, stop now." Set just ABOVE the tag's apparent size when
+# the bot's front is AT the line (~44 px measured) so it reads as "very close," but
+# NOT so high it can never be reached before the tag goes overhead (then only the
+# lost-commit would ever fire). 55 = a touch past the line.
+#   stops too early -> RAISE   |   never fires / overshoots -> LOWER
 # 0 = use the red-line/metric stop path instead (sim, or a bot with a clean line).
-# Set to 44 = the measured tag size when the bot's front is AT the line, so it
-# stops ON the line instead of overshooting into the box.
-sign_stop_px: 44
+sign_stop_px: 55
+# (stop_commit_grace_s inherits the base 1.0 s — long enough to ride out a brief tag
+#  mis-detect while approaching, short enough to stop promptly once the tag is truly
+#  gone. NOT raised: with no approach slowdown the bot is at full speed, so a longer
+#  grace would coast it well past the sign before committing.)
 
 # STRAIGHT-CREEP gate. DISABLED (0): the dead-straight creep made the bot IGNORE
 # the lane during approach and drive OFF-ROAD ("violates lane servoing rules and
@@ -103,6 +124,30 @@ line_straight_px: 0
 # CPU inference (OBJDET_CPU=1), so there is no TensorRT-build OOM. The model is
 # tiny (~7 MB). Set to false to fall back to lane+signs only (no duckie braking).
 object_detection: true
+
+# Duckie detection backend on the bot. 'auto' = use the trained YOLO model if it
+# loads (it's trained on ducks, so it never mistakes yellow lane dashes for ducks),
+# otherwise fall back to the dependency-free HSV+shape detector so the bot still
+# brakes for ducks instead of going blind. This Jetson can't load the model
+# (OpenCV 4.1.1 can't parse the YOLOv5 ONNX, no onnxruntime), so in practice the bot
+# runs HSV here — duck_hsv's shape/solidity/lane-aware gates reject most dashes. To
+# get model-grade dash rejection on the bot, install onnxruntime there and set this
+# to 'model' (which would otherwise turn duck braking OFF if the model can't load).
+duck_detect_mode: auto
+
+# Obstacle confirm: require this many consecutive fresh-detection cycles with an
+# obstacle before stopping, so one flickery HSV frame can't trigger a phantom stop.
+# 2 is a light debounce (the grace window still latches the stop after it clears).
+obstacle_confirm_frames: 2
+
+# "In the way" gate for the model/should_stop_for_obstacle duck path: ignore a duck
+# detection whose centre-x is outside the central 60% of the frame (off to the side,
+# not in our lane), so the bot only soft-stops for an obstacle actually ahead.
+# 0.20 matches the blue other-bot band (bot_stop_center_frac / detect_vehicles_hsv).
+# The bot's own duck path is HSV (duck_hsv_cfg has its OWN cx_margin_frac), so this
+# only engages if the trained model loads; it is harmless defense-in-depth otherwise.
+# Set 0.0 to disable. (Sim leaves this unset = 0.0 = off.)
+obstacle_cx_margin_frac: 0.20
 
 # Other-bot soft-stop: brake when another Duckiebot (a Vehicle AprilTag) is close
 # and centred ahead. Calibration-free — gated on the plate's apparent size in
@@ -200,4 +245,46 @@ turn_timeout_s: 6.0
 # an obstacle in the intersection box (instead of driving through blind). Cap the
 # total hold so a false-positive detection can't strand the bot mid-junction: once
 # this many seconds of holding accumulate, the turn completes regardless.
+# (Only used when turn_mode == 'maneuver'; the bot runs 'lane_follow' below.)
 maneuver_hold_max_s: 3.0
+
+# NO SIGN-APPROACH MECHANIC ON THE REAL BOT. The bot keeps FOLLOWING THE LANE at
+# normal speed while a sign is in view — it does NOT decelerate/creep/brake just
+# because it SAW a sign. It only ACTS on the sign (stop + apply the rules below) at
+# the commit point: the sign is no longer visible after having gotten close (the tag
+# goes overhead ≈ the red line is reached — lost-sign commit, gated on
+# sign_react_min_px + stop_commit_grace_s), OR the tag is very close (sign_stop_px),
+# OR a real red line/band is seen. The legacy decelerate-and-creep approach is kept
+# in the SIM (default approach_creep: true) for its smooth-stop demo. Set this true
+# to restore the creep on the bot too.
+approach_creep: false
+
+# INTERSECTION BEHAVIOUR ON THE REAL BOT: follow the road with the sign's rules,
+# do NOT drive a pre-scripted route. At the stop line the bot applies the sign's
+# RULES (full stop + pause for a stop sign, yield/right-of-way, obstacle gate, legal
+# turns) and then RESUMES VISUAL LANE-FOLLOWING straight through the junction —
+# instead of executing an open-loop encoder-tick arc. The old arc was uncalibrated
+# for this venue and drove the bot off the road ("when it detects a tag it just goes
+# a pre-scripted route instead of following the road with changed rules"). The legal
+# direction is still chosen + shown in /telemetry; only the MOTION is closed-loop on
+# the lane. The simulation keeps turn_mode 'maneuver' (the rubric arc-turn demo).
+turn_mode: lane_follow
+
+# JUNCTION CROSSING (lane_follow). The SIGN's chosen turn DRIVES THE WHEELS DIRECTLY
+# across the junction — lane servoing is IGNORED during the crossing. This is the fix
+# for "it chose left but the lane code (following the white line) took it right": at a
+# junction the sign wins, not the lane. After junction_cross_seconds the bot resumes
+# lane-following and re-centres on the outgoing lane. (No sign in view => normal lane-
+# following, unchanged.) The chosen direction always comes from the legal set, so it
+# can never turn an illegal way (e.g. right at a left-T).
+#   junction_lane_bias   = L/R wheel differential = TURN SHARPNESS.
+#   junction_cross_speed = forward speed during the turn.
+#   junction_cross_seconds = how long the commanded turn runs before lane resumes.
+# Tune on the bot:
+#   under-turns / doesn't complete the turn -> RAISE junction_lane_bias or _seconds
+#   over-rotates / spins past the lane       -> LOWER junction_lane_bias or _seconds
+#   crosses too fast/slow                    -> adjust junction_cross_speed
+# 0.0 disables (pure lane_follow).
+junction_lane_bias: 0.26
+junction_cross_speed: 0.3
+junction_cross_seconds: 2.0

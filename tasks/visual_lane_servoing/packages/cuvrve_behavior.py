@@ -1,29 +1,35 @@
-from typing import List, Tuple
+from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 
-def detect_curve(yellow_xs: List[int], white_xs: List[int],
-                 curve_threshold: int = 350) -> Tuple[bool, int]:
+def detect_curve(yellow_slices: Sequence[Optional[float]],
+                 white_slices: Sequence[Optional[float]],
+                 curve_threshold: int = 60) -> Tuple[bool, int]:
     """Is the road CURVING, and which way?
 
-    yellow_xs / white_xs are the per-slice mean x of each lane line, ordered from
-    the slice FARTHEST ahead (index 0) to the slice NEAREST the robot (index -1)
-    — see detect_lines_in_slices. On a straight the line sits at roughly the same x
-    in every slice; on a curve the FAR end shifts sideways relative to the NEAR end.
-    So the horizontal shift (far - near) across the slices is the curvature signal.
+    ``yellow_slices`` / ``white_slices`` are SLICE-ALIGNED per-slice mean x of each
+    lane line (``None`` where that line wasn't seen in a slice), ordered from the
+    slice FARTHEST ahead (index 0) to the slice NEAREST the robot (index -1).
 
-    Returns (is_curve, direction): direction +1 = road bends RIGHT (far end is to
-    the right of the near end), -1 = bends LEFT, 0 = straight. Used by the lane
-    agent to slow down and add steering authority through the bend so it doesn't
-    drift wide and cross the outer line. Was previously a stub (always straight),
-    i.e. the bot had NO curve handling at all.
-    """
-    best_shift = 0
-    for xs in (yellow_xs, white_xs):
-        if xs is not None and len(xs) >= 2:
-            shift = xs[0] - xs[-1]                 # far slice minus near slice
-            if abs(shift) > abs(best_shift):
-                best_shift = shift
-    if abs(best_shift) > curve_threshold:
-        return True, (1 if best_shift > 0 else -1)
+    CURVATURE SIGNAL = the far-vs-near shift of the LANE CENTRE (midpoint of the two
+    lines), NOT of an individual line. This matters: a single line CONVERGES toward
+    the image's vanishing point as it recedes (pure perspective), so on a perfectly
+    STRAIGHT road each line's far-near shift is large (~100 px on the real 160° FOV
+    camera) — the old per-line test mistook that for a curve and slammed curve_boost,
+    swerving the bot off straights. The two lines converge SYMMETRICALLY, so their
+    MIDPOINT barely moves on a straight (~15 px measured) and only shifts on a real
+    bend. Using the centre cancels perspective and makes the threshold meaningful.
+
+    Returns (is_curve, direction): +1 = bends RIGHT (far centre right of near),
+    -1 = bends LEFT, 0 = straight. Needs BOTH lines in >= 2 common slices to form a
+    centre; if only one line is visible we can't cancel perspective, so we report
+    STRAIGHT (conservative — better to under-boost than to false-swerve)."""
+    centres = [(y + w) / 2.0
+               for y, w in zip(yellow_slices, white_slices)
+               if y is not None and w is not None]
+    if len(centres) < 2:
+        return False, 0
+    shift = centres[0] - centres[-1]               # far centre minus near centre
+    if abs(shift) > curve_threshold:
+        return True, (1 if shift > 0 else -1)
     return False, 0

@@ -17,9 +17,37 @@ detection_threshold: 100
 recovery_speed: 0.18
 recovery_turn: 0.08
 recovery_max_frames: 12
-curve_boost: 1.5      # outer-wheel boost through a curve (was a buggy hard-coded 5 for left only)
-curve_speed: 0.12     # slow through curves so it tracks the bend instead of drifting wide
-curve_threshold: 110  # px shift (far vs near slice) that counts as a curve. LOWERED from 400
-                      # (which never triggered, so curves were unhandled and the bot drifted
-                      # wide and crossed the outer line). ~110 fires on real bends, not jitter.
+curve_boost: 1.0      # STEADY SPEED ON TURNS: 1.0 = NO outer-wheel boost. The boost (1.3/1.5)
+                      # sped the bot up through turns ("runs fast on turns"); 1.0 keeps the
+                      # forward speed constant and turns purely on the P/D steering differential.
+curve_speed: 0.25     # = base_speed: do NOT slow on curves either, so the cruise speed is the
+                      # SAME on straights and bends (steady speed always). Lower it again only if
+                      # you later want the bot to ease off through sharp curves.
+curve_threshold: 60   # NOW on the perspective-cancelling lane-CENTRE shift (cuvrve_behavior.py),
+                      # NOT the old per-line shift. Measured on this bot's 160deg-FOV camera: a
+                      # STRAIGHT road's per-line shift is ~95-103 px (pure perspective convergence)
+                      # — the old per-line threshold 110 sat right on top of that, so while moving
+                      # it FALSE-TRIGGERED a curve and curve_boost swerved the bot off straights
+                      # ("servoing broken / goes offroad"). The lane CENTRE shift on the same
+                      # straights is only ~15 px, so 60 clears straight-jitter with margin while
+                      # still firing on a real bend. Lower toward 40 if it drifts wide on curves.
 steering_threshold: 0.15
+
+# --- "best of both" ports from the reference's perfect-lane branch (BOT only) ---
+# These are OFF in the agent by default (sim stays byte-identical); the bot opts in
+# here. All are tunable live via the dashboard sliders. Starting values mirror the
+# reference's proven branch, gentled where noted.
+#
+# Wrong-side white rejection: if the white line reads to the LEFT of the yellow
+# (oncoming-lane edge / intersection artefact), discard it and follow yellow only,
+# so the bot can't steer the lane centre toward oncoming traffic.
+reject_white_wrong_side: true
+# Wheel-speed floor (anti-stiction): real DC motors stall below a PWM threshold, so
+# lift both wheels until the slower one clears this (keeping their difference = the
+# steering). 0.08 = reference value; lower toward 0.05 if turns feel too wide (the
+# floor trades a little steering authority for keeping the inner wheel turning).
+min_wheel_speed: 0.08
+# Steering EMA: smooth the steering command across frames to damp detection jitter
+# into a steady turn. 0.5 = moderate (reference used 0.6). Raise toward 0.6 for more
+# smoothing if it twitches; lower toward 0.3 if it feels sluggish to corner.
+steer_smooth: 0.5

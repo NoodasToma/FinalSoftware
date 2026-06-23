@@ -17,3 +17,7 @@ jupyter
 matplotlib
 onnxruntime
 pupil-apriltags
+
+# Test suite (tasks/project/tests — hardware-free unit + integration tests).
+# Run with the 3.11 venv: .venv311\Scripts\python.exe -m pytest
+pytest

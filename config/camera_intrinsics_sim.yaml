@@ -1,0 +1,32 @@
+# SIMULATION camera intrinsics + AprilTag size — the sim counterpart of the real
+# bot's config/camera_intrinsics.yaml.
+#
+# WHY THIS FILE EXISTS (sim differs HEAVILY from the real bot's camera):
+#   * The real bot's config/camera_intrinsics.yaml ships ALL-COMMENTED, so the
+#     hardware runs "uncalibrated": AprilTag est_distance is +inf and sign
+#     reactions gate on the tag's apparent PIXEL SIZE (sign_react_min_px /
+#     sign_stop_px in maneuver_timings_bot.yaml).
+#   * The Godot sim renders a DIFFERENT camera (640x480 SubViewport, effective
+#     fx ~252 px) and its sign planes are a different physical size (0.13 m vs the
+#     real 0.065 m tags). The sim server passes THESE values to agent.main so the
+#     detector computes a real metric est_distance and the bot takes the
+#     est_distance < stop_distance_m code path — the calibrated path, which the
+#     uncalibrated real bot does NOT use.
+#
+# So the two platforms run the SAME agent but with deliberately different camera
+# calibration: this file (sim) vs camera_intrinsics.yaml (real, uncalibrated).
+#
+# fx was calibrated empirically (tasks/project/sim_tests/calibrate_intrinsics.py):
+# place a known tag at a known distance, fx = side_px * distance / tag_size; the
+# resulting est_distance matched ground truth within ~3% over 0.4-1.1 m. Re-run
+# that tool if the Godot camera fov / viewport ever changes.
+intrinsics:
+  fx: 252.0
+  fy: 252.0
+  cx: 320.0
+  cy: 240.0
+
+# Physical size (metres) of the sim's AprilTag planes. Real Duckietown tags are
+# 0.065 m; the sim uses larger 0.13 m planes so they decode reliably at sim render
+# resolution. Must match the intrinsics above for est_distance to be correct.
+tag_size_m: 0.13

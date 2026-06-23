@@ -22,10 +22,19 @@ def detect_lines_in_slices(
     mask_yellow: np.ndarray,
     mask_white:  np.ndarray,
     h: int,
-) -> Tuple[list, list]:
+) -> Tuple[list, list, list, list]:
+    """Returns (yellow_xs, white_xs, yellow_slices, white_slices).
+
+    yellow_xs/white_xs are the COMPACT mean-x lists (only slices where the line was
+    seen) used for the lane-centre error. yellow_slices/white_slices are SLICE-ALIGNED
+    (length _NUM_SLICES, None where a line wasn't seen in that slice) so the curve
+    detector can pair the two lines per slice and use the perspective-cancelling
+    lane-CENTRE shift — see cuvrve_behavior.detect_curve."""
     slice_height = int(h * 0.35 / _NUM_SLICES)
     start_y      = int(h * _ROI_START)
     yellow_xs, white_xs = [], []
+    yellow_slices = [None] * _NUM_SLICES
+    white_slices  = [None] * _NUM_SLICES
 
     for i in range(_NUM_SLICES):
         y = start_y + i * slice_height + slice_height // 2
@@ -33,14 +42,14 @@ def detect_lines_in_slices(
         strip_y = mask_yellow[y - _SLICE_TOL: y + _SLICE_TOL, :]
         idx = np.where(strip_y > 0)[1]
         if len(idx) > 0:
-            yellow_xs.append(int(np.mean(idx)))
+            mx = int(np.mean(idx)); yellow_xs.append(mx); yellow_slices[i] = mx
 
         strip_w = mask_white[y - _SLICE_TOL: y + _SLICE_TOL, :]
         idx = np.where(strip_w > 0)[1]
         if len(idx) > 0:
-            white_xs.append(int(np.mean(idx)))
+            mx = int(np.mean(idx)); white_xs.append(mx); white_slices[i] = mx
 
-    return yellow_xs, white_xs
+    return yellow_xs, white_xs, yellow_slices, white_slices
 
 
 class LaneServoingAgent:
@@ -77,11 +86,33 @@ class LaneServoingAgent:
         # yellow (steer a touch left), so the bot rides the middle instead of
         # hugging the white edge. Tunable live via /update_config {"offset": ...}.
         self.center_offset       = cfg.get('center_offset',       0.0)
+        # --- "best of both" ports from the reference's perfect-lane branch -------
+        # All DEFAULT OFF so the sim + hardware-free tests are byte-identical; the
+        # real-bot config (lane_servoing_config_bot.yaml) opts in. See the comments
+        # on each below.
+        #
+        # Wrong-side white rejection: if the white line is detected to the LEFT of
+        # the yellow line, that white is the oncoming lane's edge / an intersection
+        # artefact, not OUR lane's right edge — following its midpoint would steer
+        # the bot toward oncoming traffic. When enabled we discard that white and
+        # track the yellow only. 0/false keeps the old midpoint-of-both behaviour.
+        self.reject_white_wrong_side = bool(cfg.get('reject_white_wrong_side', False))
+        # Wheel-speed FLOOR (anti-stiction): real DC motors don't move below a PWM
+        # threshold, so a wheel commanded below min_wheel_speed during a turn just
+        # stalls. When >0 we lift BOTH wheels so the slower one clears the floor
+        # (preserving their difference = the steering), then rescale if the peak
+        # exceeds 1. 0.0 = no floor (a no-op; sim has no stiction).
+        self.min_wheel_speed     = float(cfg.get('min_wheel_speed', 0.0))
+        # Steering EMA: exponentially smooth the steering command across frames to
+        # damp detection jitter into a steady turn (reference uses 0.6). 0 disables
+        # (steering passes straight through, the old behaviour).
+        self.steer_smooth        = float(cfg.get('steer_smooth', 0.0))
 
         self.frame_count        = 0
         self._recovery_frames   = 0
         self._prev_error        = 0.0
         self._filtered_error    = 0.0
+        self._filtered_steering = 0.0
         self._lane_half_width   = float(_LINE_OFFSET)
         self._left_history      = deque(maxlen=3)
         self._right_history     = deque(maxlen=3)
@@ -91,6 +122,12 @@ class LaneServoingAgent:
         if left_det and right_det and yellow_xs and white_xs:
             y_mean = float(np.mean(yellow_xs))
             w_mean = float(np.mean(white_xs))
+            # Wrong-side white: white LEFT of yellow is the oncoming-lane edge /
+            # intersection noise, not our lane's right edge. Discard it and track
+            # yellow only, so we don't steer the lane centre toward oncoming.
+            if self.reject_white_wrong_side and w_mean <= y_mean:
+                error = w / 2.0 - (y_mean + self._lane_half_width)
+                return float(np.clip(error / (w / 2.0), -1.0, 1.0))
             measured = (w_mean - y_mean) / 2.0
             if measured > 20:
                 self._lane_half_width = 0.9 * self._lane_half_width + 0.1 * measured
@@ -109,6 +146,23 @@ class LaneServoingAgent:
         self._prev_error = error
         steering = self.p_gain * error + self.d_gain * error_diff
         return float(np.clip(steering, -self.max_steer, self.max_steer))
+
+    def _apply_wheel_floor(self, left: float, right: float):
+        """Lift both wheels so the slower one clears min_wheel_speed (preserving
+        their difference = steering), then rescale if the peak exceeds 1. A no-op
+        when min_wheel_speed <= 0 (the sim default). Ported from the reference's
+        perfect-lane branch to beat real-motor stiction during turns."""
+        if self.min_wheel_speed > 0.0:
+            lo = min(left, right)
+            if lo < self.min_wheel_speed:
+                shift = self.min_wheel_speed - lo
+                left += shift
+                right += shift
+            peak = max(left, right)
+            if peak > 1.0:
+                left /= peak
+                right /= peak
+        return float(np.clip(left, 0.0, 1.0)), float(np.clip(right, 0.0, 1.0))
 
     def _motor_commands(self, steering: float, recovery: bool, is_curve: bool, both_visible: bool):
         if recovery:
@@ -150,7 +204,7 @@ class LaneServoingAgent:
             else:
                 left  *= self.curve_boost
 
-        return float(np.clip(left, 0.0, 1.0)), float(np.clip(right, 0.0, 1.0))
+        return self._apply_wheel_floor(left, right)
 
     def _smooth(self, left, right, both_visible):
         buf = 2 if both_visible else 1
@@ -196,9 +250,13 @@ class LaneServoingAgent:
         right_det = white_pixels  > 0
         recovery  = total_pixels  < self.detection_threshold
 
-        yellow_xs, white_xs = detect_lines_in_slices(mask_y, mask_w, h)
+        yellow_xs, white_xs, yellow_slices, white_slices = detect_lines_in_slices(mask_y, mask_w, h)
         both_visible        = left_det and right_det and not recovery
-        is_curve, curve_dir = detect_curve(yellow_xs, white_xs, self.curve_threshold)
+        # Perspective-cancelling curve detection on the lane-CENTRE shift (see
+        # cuvrve_behavior.detect_curve): a single line's far-near shift is ~100 px on
+        # a straight here from pure perspective, which the old per-line test mistook
+        # for a curve and swerved off straights; the centre barely moves on a straight.
+        is_curve, curve_dir = detect_curve(yellow_slices, white_slices, self.curve_threshold)
 
         raw_error            = self._calculate_error(yellow_xs, white_xs, left_det, right_det, w)
         # Bias the target toward the yellow line so the bot rides the lane middle
@@ -206,6 +264,12 @@ class LaneServoingAgent:
         raw_error            = float(np.clip(raw_error + self.center_offset, -1.0, 1.0))
         self._filtered_error = 0.5 * self._filtered_error + 0.5 * raw_error
         steering             = self._calculate_steering(self._filtered_error)
+        # Optional steering EMA (steer_smooth>0): damp frame-to-frame jitter into a
+        # steady turn. Disabled (0) => steering passes straight through, unchanged.
+        if self.steer_smooth > 0.0:
+            self._filtered_steering = (self.steer_smooth * steering
+                                       + (1.0 - self.steer_smooth) * self._filtered_steering)
+            steering = self._filtered_steering
         left, right          = self._motor_commands(steering, recovery, is_curve, both_visible)
         left, right          = self._smooth(left, right, both_visible)
 

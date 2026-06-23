@@ -1,5 +1,22 @@
 base_speed: 0.25
-center_offset: 0.12
+# Lateral target bias toward the yellow centre line. LOWERED 0.12 -> 0.05 to match
+# the real-bot config: once chunky_fill was turned on for the sim too (it fills the
+# dashed yellow into solid blobs -> a much STRONGER yellow mask), the old 0.12 was a
+# persistent left-steer DC bias that FOUGHT the first sharp RIGHT bend out of spawn,
+# so the bot under-turned it, drifted LEFT across the dashed centre line, and got
+# stuck in the oncoming lane (the "cuts onto the yellow on turns" screenshot). The
+# bot hit this exact chunky_fill+0.12 failure and fixed it the same way
+# (lane_servoing_config_bot.yaml). If straights start hugging the white edge, nudge
+# back up toward 0.08; if it still crosses the centre on a bend, drop toward 0.03.
+center_offset: 0.05
+# LANE-SIDE RECOVERY (matches the bot). If the white line is detected to the LEFT of
+# the yellow, the bot has crossed onto the WRONG side of the centre line (white =
+# oncoming-lane edge): discard that white and servo to the yellow only, steering the
+# bot back to the RIGHT of the yellow. Without this, after a cross the both-lines
+# midpoint re-centres the bot in the oncoming lane and it stays there (the stuck
+# wrong-side state in the screenshot). Only fires when white actually reads left of
+# yellow, so normal right-lane driving (white on the right) is unchanged.
+reject_white_wrong_side: true
 curve_boost: 1.8
 curve_speed: 0.1
 curve_threshold: 400

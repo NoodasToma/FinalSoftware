@@ -109,34 +109,30 @@ def _bay_station(name, cell, trig, test, legal):
 
 
 # ---------------------------------------------------------------------------- #
-# The full station list the suite + dashboard iterate over.
+# The active station list the suite + dashboard iterate over.
+#
+# These are ONLY the stations that exist in the current project.tscn — the
+# drivable LOOP with its spaced, varied signs (4-way stop+sign, the east T-junction,
+# the duckie obstacle, the parked vehicle). The traffic light was removed/stashed
+# (see tasks/project/_stashed/traffic_lights/), and the dense off-track SignBays
+# strip + roadside decode row were removed in favour of an obstacle-course layout.
+#
+# The SIGN_BAYS / DECODE_SIGNS definitions above are KEPT (build_strip.py can still
+# regenerate the bays into a scene if exhaustive in-sim per-sign coverage is wanted
+# later) but are NO LONGER appended here, so every dashboard "jump" button and every
+# "Run all tests" station points at something that actually exists on the course.
+# Per-sign logic is covered headlessly by tasks/project/tests/ instead.
 STATIONS: list[dict] = [
     # --- LOOP stations (reuse proven poses from behaviour_suite) -------------
     {"name": "lane", "label": "lane following", "teleport": (0.9, 5.1, 0.0),
      "seconds": 8, "kind": "lane", "expect": {"max_err": 0.7, "min_move": 0.25}},
     {"name": "stop4way", "label": "stop + 4-way", "teleport": (5.85, 7.05, 0.0),
      "seconds": 18, "kind": "legal", "expect": {"tags": [1, 8], "legal": ["left", "right", "straight"]}},
-    {"name": "light", "label": "traffic light", "teleport": (5.85, 4.45, 0.0),
-     "seconds": 22, "kind": "light", "expect": {"tags": [74]}},
     {"name": "obstacle", "label": "duckie obstacle", "teleport": (4.5, 1.632, 270.0),
      "seconds": 9, "kind": "obstacle", "expect": {}},
     {"name": "vehicle", "label": "other robot (vehicle plate)", "teleport": (5.85, 4.85, 0.0),
      "seconds": 8, "kind": "vehicle", "expect": {"min_tag": 400}},
 ]
-
-# --- DECODE-only roadside signs ---------------------------------------------
-for _x, _z, _tag, _name in DECODE_SIGNS:
-    # teleport SOUTH of the spawn-straight duckie (Duck_1_9 @ z=5.7) so the decode
-    # drive-past isn't pre-empted by an obstacle soft-stop.
-    STATIONS.append({
-        "name": _name, "label": _name.replace("_", " "),
-        "teleport": (0.9 + LANE_OFFSET, round(_z + 0.9, 3), 0.0),
-        "seconds": 8, "kind": "decode", "expect": {"tag": _tag},
-    })
-
-# --- SIGN BAYS (every remaining turn-constraint sign) -----------------------
-for _name, _cell, _trig, _test, _legal in SIGN_BAYS:
-    STATIONS.append(_bay_station(_name, _cell, _trig, _test, _legal))
 
 
 # Continuous drive-through: spawn and lane-follow the loop from the start.

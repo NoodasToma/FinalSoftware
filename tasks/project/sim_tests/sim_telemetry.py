@@ -34,11 +34,39 @@ from typing import Optional
 # tasks/project/sim_tests/calibrate_intrinsics() and pasted back here. The value
 # below is the calibrated result; re-run calibration if the camera fov/viewport
 # changes.
-SIM_TAG_SIZE_M: float = 0.13                      # unified sim AprilTag plane (metres) — "normal"-sized signs
+_SIM_TAG_SIZE_DEFAULT = 0.13                       # unified sim AprilTag plane (metres) — "normal"-sized signs
 # fx CALIBRATED empirically by calibrate_intrinsics.py: est_distance matched the
 # true camera->tag distance within ~3% across 0.4-1.1 m. (Initial fov guess of
 # 313 was wrong; the Godot camera's effective focal length is ~252 px.)
-SIM_APRILTAG_INTRINSICS = (252.0, 252.0, 320.0, 240.0)   # (fx, fy, cx, cy)
+_SIM_APRILTAG_DEFAULT = (252.0, 252.0, 320.0, 240.0)   # (fx, fy, cx, cy)
+
+
+def _load_sim_camera_config():
+    """Read the SIM camera intrinsics + tag size from config/camera_intrinsics_sim.yaml
+    (the explicit sim counterpart of the real bot's camera_intrinsics.yaml — see that
+    file's header for why the two platforms are calibrated differently). Falls back to
+    the constants above if the file is missing/partial, so the sim never breaks on a
+    bad edit. Returns ((fx, fy, cx, cy), tag_size_m)."""
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..",
+                        "config", "camera_intrinsics_sim.yaml")
+    intr = _SIM_APRILTAG_DEFAULT
+    size = _SIM_TAG_SIZE_DEFAULT
+    try:
+        import yaml
+        with open(os.path.normpath(path)) as fh:
+            cfg = yaml.safe_load(fh) or {}
+        src = cfg.get("intrinsics", {})
+        if all(k in src for k in ("fx", "fy", "cx", "cy")):
+            intr = (float(src["fx"]), float(src["fy"]),
+                    float(src["cx"]), float(src["cy"]))
+        if cfg.get("tag_size_m") is not None:
+            size = float(cfg["tag_size_m"])
+    except Exception:
+        pass   # keep the constants — sim fidelity tuning, not safety-critical
+    return intr, size
+
+
+SIM_APRILTAG_INTRINSICS, SIM_TAG_SIZE_M = _load_sim_camera_config()
 
 
 def sim_fidelity_kwargs() -> dict:

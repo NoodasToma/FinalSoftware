@@ -1,3 +1,17 @@
+# AGENT SELECTION (sim). false (default) = the project's own agent.main. true = the
+# REFERENCE sign-detection agent (lane servoing + the ported KvatiTown SignBehaviorFSM,
+# which executes the intersection turn open-loop so the sign decision wins over lane-
+# following). Flip to true in the dashboard config editor + "Save & Apply" to watch the
+# reference sign behaviour in the sim. (The real bot sets this true in its own overlay.)
+sign_agent: false
+
+# Sign-approach behaviour (see agent.py). true (here, the SIM) = legacy decelerate-
+# and-creep approach used by the smooth-stop rubric demo. The real bot overlay
+# (maneuver_timings_bot.yaml) sets this FALSE = no approach mechanic: follow the lane
+# at normal speed and only act on a sign at the commit point (sign lost ≈ red line,
+# or very close, or red line/band seen). Set false here (or flip it in the dashboard
+# config editor) to watch the no-approach behaviour in the simulation too.
+approach_creep: true
 approach_creep_speed: 0.25
 base_speed: 0.25
 light_arm_distance_m: 1.5
@@ -8,6 +22,14 @@ obstacle_clear_grace_s: 1.0
 # sim exercises the same SOFT_STOP path as the bot; set false to disable braking
 # for duckies. Other-bot soft-stop (Vehicle AprilTag) is independent of this flag.
 object_detection: true
+# Duckie detection backend (see agent.py). 'model' = ONLY the trained YOLO model,
+# which is trained on duckies and therefore NEVER mistakes the yellow lane DASHES
+# for ducks (the colour-based HSV path can). The sim runs the model fine, so we
+# force 'model' here to guarantee dashes are not detected as ducks. ('auto' would
+# also pick the model when it loads; 'model' makes it explicit and refuses to
+# silently fall back to HSV.) The real bot, which may not be able to load the model,
+# uses 'auto' in maneuver_timings_bot.yaml so it still brakes for ducks via HSV.
+duck_detect_mode: model
 ramp_max_step: 0.05
 sign_cooldown: 4
 sign_react_distance_m: 1.5

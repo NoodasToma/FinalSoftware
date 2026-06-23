@@ -23,7 +23,7 @@ os.environ.setdefault('OBJDET_CPU', '1')
 # be set BEFORE the first `import numpy` in the process (so before cv2 too).
 os.environ.setdefault('OPENBLAS_CORETYPE', 'ARMV8')
 
-from flask import Flask, Response, jsonify
+from flask import Flask, Response, jsonify, request
 import numpy as np
 import cv2
 import yaml
@@ -124,6 +124,150 @@ def _frame_observe(bgr):
     _latest_frame = bgr
 
 
+# ============================================================ manual drive (BOT-safe)
+# The bot shares ONE I2C bus for wheels + LEDs; a SECOND thread writing the wheels
+# is exactly what crashed this project with OSError(121). So manual drive here does
+# NOT write the wheels from a Flask thread. Instead the dashboard stores the latest
+# command, and the AGENT (the single I2C writer) applies it via the `manual_cmd`
+# hook — perception/telemetry keep running, and there is never a second writer.
+# A stale command (dropped client) decays to (0, 0) so the bot can't run away.
+_manual_lock = threading.Lock()
+_manual = {'on': False, 'left': 0.0, 'right': 0.0, 'last_cmd': 0.0}
+_MANUAL_TIMEOUT_S = 0.4
+_MANUAL_MAX = 0.6           # clamp manual wheel speed (gentler than full throttle)
+
+
+def _manual_cmd():
+    """Polled by the agent every loop. Returns (left, right) to drive, or None to
+    let the agent drive normally. Bot-safe: the AGENT does the actual wheel write."""
+    with _manual_lock:
+        if not _manual['on']:
+            return None
+        if (time.time() - _manual['last_cmd']) > _MANUAL_TIMEOUT_S:
+            return (0.0, 0.0)               # dropped client -> stop, but stay in manual
+        return (_manual['left'], _manual['right'])
+
+
+# ---------------------------------------------------------------- live config editor
+# YAMLs surfaced in the dashboard so you can tune ON THE BOT without redeploying.
+# These are the BOT-specific files real_server already applies; editing + applying
+# re-reads them (lane HSV applies live; the rest restart the agent thread).
+_ROOT = project_root
+CONFIG_FILES = {
+    'maneuver_timings_bot': os.path.join(_PKG_CONFIG, 'maneuver_timings_bot.yaml'),
+    'lane_servoing_bot':    os.path.join(_ROOT, 'config', 'lane_servoing_config_bot.yaml'),
+    'lane_hsv_bot':         os.path.join(_ROOT, 'config', 'lane_servoing_hsv_config_bot.yaml'),
+    'traffic_light_hsv':    os.path.join(_PKG_CONFIG, 'traffic_light_hsv.yaml'),
+}
+
+
+def _load_all_config() -> dict:
+    out = {}
+    for name, path in CONFIG_FILES.items():
+        try:
+            with open(path) as fh:
+                out[name] = yaml.safe_load(fh) or {}
+        except Exception as e:
+            out[name] = {'_error': str(e)}
+    return out
+
+
+def _save_config_section(name: str, values: dict) -> None:
+    path = CONFIG_FILES[name]
+    with open(path) as fh:
+        cfg = yaml.safe_load(fh) or {}
+    for k, v in values.items():
+        # keep ints int, floats float, leave strings/bools alone
+        if isinstance(v, str):
+            s = v.strip()
+            low = s.lower()
+            if low in ('true', 'false'):
+                cfg[k] = (low == 'true')
+                continue
+            try:
+                fv = float(s)
+                cfg[k] = int(fv) if (fv.is_integer() and 'gain' not in k
+                                     and 'speed' not in k and 'bias' not in k
+                                     and 'boost' not in k) else fv
+                continue
+            except (TypeError, ValueError):
+                cfg[k] = v
+                continue
+        cfg[k] = v
+    with open(path, 'w') as fh:
+        yaml.safe_dump(cfg, fh, default_flow_style=False, sort_keys=True)
+
+
+# ---------------------------------------------------------------- restartable agent
+_agent_thread = None
+
+
+def _start_agent():
+    """(Re)start agent.main in a daemon thread with freshly-loaded bot config. The
+    camera/wheels/LEDs are created once in main() and reused, so a restart only
+    re-reads config + rebuilds the perception objects — it never re-inits hardware."""
+    global _agent_thread, stop_event
+    stop_event = threading.Event()
+    timings, overlay_keys = _load_bot_timings()
+    lane_cfg = _bot_lane_config_path()
+    _apply_bot_lane_hsv()
+
+    # Agent selection: `sign_agent: true` in the bot timings runs the REFERENCE's
+    # sign-detection agent (lane servoing + SignBehaviorFSM — KvatiTown design, the
+    # one that executes the turn open-loop so the sign decision wins over the lane);
+    # otherwise the project's default agent.main runs. Toggle it live in the dashboard
+    # config editor (maneuver_timings_bot.yaml) + Restart.
+    use_sign_agent = bool(timings.get('sign_agent', False))
+    sign_config = timings.get('sign_config') or None
+
+    def _run_agent():
+        try:
+            if use_sign_agent:
+                import tasks.project.packages.agent_signs as agent_signs
+                print('[server] using REFERENCE sign-detection agent (sign_agent: true)', flush=True)
+                agent_signs.main(camera, wheels, leds, stop_event,
+                                 observer=_observe, frame_observer=_frame_observe,
+                                 manual_cmd=_manual_cmd, lane_config_path=lane_cfg,
+                                 sign_config=sign_config, timings=timings)
+            else:
+                agent.main(camera, wheels, leds, stop_event,
+                           timings_override=timings, lane_config_path=lane_cfg,
+                           observer=_observe, frame_observer=_frame_observe,
+                           manual_cmd=_manual_cmd)
+        except Exception as e:
+            print('=' * 60, flush=True)
+            print(f'AGENT THREAD CRASHED: {e!r}', flush=True)
+            traceback.print_exc()
+            print('=' * 60, flush=True)
+            try:
+                wheels.set_wheels_speed(0.0, 0.0)
+            except Exception:
+                pass
+
+    _agent_thread = threading.Thread(target=_run_agent, daemon=True, name='AgentThread')
+    _agent_thread.start()
+    return overlay_keys
+
+
+def _restart_agent():
+    """Stop the running agent, then start a fresh one (picks up edited config)."""
+    global _agent_thread
+    with _manual_lock:                      # leave manual mode on restart
+        _manual['on'] = False
+        _manual['left'] = _manual['right'] = 0.0
+    try:
+        stop_event.set()
+        if _agent_thread:
+            _agent_thread.join(timeout=6)
+    except Exception:
+        pass
+    try:
+        wheels.set_wheels_speed(0.0, 0.0)
+    except Exception:
+        pass
+    _start_agent()
+
+
 # YOLO object_detection class ids -> label/colour (BGR), matching the model.
 _OBJ = {0: ('duckie', (0, 215, 255)), 1: ('truck', (180, 100, 220)), 2: ('sign', (50, 205, 50))}
 
@@ -133,7 +277,9 @@ _IDLE_REASON = {
     'STOPPED':   'stopped at line (pausing / deciding turn)',
     'WAIT':      'waiting (red light or yielding to a robot)',
     'SOFT_STOP': 'OBSTACLE ahead - holding until it clears',
-    'APPROACH':  'approaching a sign - slowing to the line',
+    # No approach slowdown on the bot (approach_creep:false): a sign is in view but
+    # the bot keeps lane-following normally until the commit point.
+    'APPROACH':  'sign in view - following the lane until the line',
 }
 
 
@@ -239,22 +385,7 @@ def generate_frames():
 
 @app.route('/')
 def index():
-    # Debug homepage: the live camera with the agent's perception + decision
-    # overlaid (same info as the sim dashboard) so you can SEE what it detects
-    # and why it stops. Auto-refreshing /telemetry text below the image.
-    return ("<!doctype html><title>project - DuckieBot</title>"
-            "<body style='margin:0;background:#111;color:#ddd;font-family:sans-serif;text-align:center'>"
-            "<h3 style='padding:6px;margin:0'>project task - live debug view</h3>"
-            "<img src='/video' style='max-width:100%;height:auto'>"
-            "<pre id='t' style='text-align:left;max-width:680px;margin:8px auto;color:#9fe'></pre>"
-            "<script>setInterval(async()=>{try{let d=await(await fetch('/telemetry')).json();"
-            "document.getElementById('t').textContent="
-            "'state: '+d.state+'   lane err: '+(d.lane?d.lane.error:'?')+'   light: '+((d.light||{}).color||'-')"
-            "+'   red_line: '+d.red_line+'   obstacle: '+d.obstacle_stop+'\\n'"
-            "+'signs: '+JSON.stringify((d.tags||[]).map(t=>t.id+':'+t.meaning))"
-            "+'\\nobjects: '+JSON.stringify((d.obstacles||[]).map(o=>o.cls));}catch(e){}},500);</script>"
-            "<p style='opacity:.6'>/video annotated stream &middot; /telemetry json &middot; /shutdown to stop</p>"
-            "</body>")
+    return Response(_PAGE, mimetype='text/html')
 
 
 @app.route('/telemetry')
@@ -262,6 +393,72 @@ def telemetry():
     """Latest agent perception + decision (state, tags, light, red line, obstacle,
     lane, legal turns). Empty until the agent's first loop."""
     return jsonify(_latest_snap or {})
+
+
+# ----------------------------------------------------------------- control routes
+@app.route('/manual', methods=['POST'])
+def manual():
+    """Enter/leave manual drive. The agent keeps running (perceiving + logging); its
+    wheel writes are simply overridden by the manual command while on."""
+    data = request.get_json(force=True, silent=True) or {}
+    with _manual_lock:
+        _manual['on'] = bool(data.get('on', False))
+        _manual['left'] = _manual['right'] = 0.0
+        _manual['last_cmd'] = time.time()
+    return jsonify({'status': 'ok', 'manual': _manual['on']})
+
+
+@app.route('/drive', methods=['POST'])
+def drive():
+    """Store the latest manual wheel command (the agent applies it — see _manual_cmd).
+    409 if not in manual mode."""
+    if not _manual['on']:
+        return jsonify({'status': 'error', 'msg': 'not in manual mode; POST /manual {"on":true} first'}), 409
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        left  = max(-_MANUAL_MAX, min(_MANUAL_MAX, float(data.get('left', 0.0))))
+        right = max(-_MANUAL_MAX, min(_MANUAL_MAX, float(data.get('right', 0.0))))
+    except (TypeError, ValueError):
+        return jsonify({'status': 'error', 'msg': 'left/right must be numbers'}), 400
+    with _manual_lock:
+        _manual['left'], _manual['right'] = left, right
+        _manual['last_cmd'] = time.time()
+    return jsonify({'status': 'ok', 'left': left, 'right': right})
+
+
+@app.route('/config', methods=['GET'])
+def get_config():
+    return jsonify(_load_all_config())
+
+
+@app.route('/config', methods=['POST'])
+def post_config():
+    """Save edited values to the bot YAMLs. ?restart=1 (default) restarts the agent
+    so timings/gains take effect; ?restart=0 only writes + applies lane HSV live."""
+    data = request.get_json(force=True, silent=True) or {}
+    changed = []
+    for section, values in data.items():
+        if section in CONFIG_FILES and isinstance(values, dict):
+            try:
+                _save_config_section(section, values)
+                changed.append(section)
+            except Exception as e:
+                return jsonify({'status': 'error', 'msg': f'{section}: {e}'}), 500
+    # lane HSV can apply live without a restart (module-global bounds)
+    try:
+        _apply_bot_lane_hsv()
+    except Exception:
+        pass
+    restart = request.args.get('restart', '1') == '1'
+    if restart:
+        _restart_agent()
+    return jsonify({'status': 'ok', 'saved': changed, 'agent_restarted': restart})
+
+
+@app.route('/restart', methods=['POST'])
+def restart_route():
+    _restart_agent()
+    return jsonify({'status': 'ok'})
 
 
 @app.route('/video')
@@ -288,6 +485,120 @@ def raw():
 def shutdown():
     shutdown_cleanup(wheels, camera, stop_event)
     return jsonify({'status': 'ok'})
+
+
+# ============================================================ dashboard page (bot)
+_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Duckiebot — project (real bot)</title>
+<style>
+ body{font-family:system-ui,Arial,sans-serif;margin:0;background:#15171c;color:#e6e6e6}
+ header{background:#0e1014;padding:10px 16px;font-size:17px;font-weight:600;border-bottom:1px solid #2a2d34}
+ .wrap{display:flex;flex-wrap:wrap;gap:16px;padding:16px}
+ .col{flex:1 1 460px;min-width:340px}
+ .card{background:#1d2027;border:1px solid #2a2d34;border-radius:8px;padding:12px;margin-bottom:16px}
+ .card h2{margin:0 0 8px;font-size:13px;color:#7fd1b9;text-transform:uppercase;letter-spacing:.05em}
+ img{width:100%;border-radius:6px;background:#000;display:block}
+ .legend{font-size:12px;color:#9aa0aa;margin-top:6px}
+ .sec{border:1px solid #2a2d34;border-radius:6px;margin-bottom:10px}
+ .sec>summary{cursor:pointer;padding:8px 10px;font-weight:600;color:#cdd3dc}
+ .grid{display:grid;grid-template-columns:1fr 92px;gap:6px 8px;padding:8px 10px}
+ .grid label{font-size:13px;align-self:center;color:#b9c0ca;word-break:break-word}
+ .grid input{width:86px;background:#0e1014;border:1px solid #333;color:#e6e6e6;border-radius:4px;padding:4px}
+ button{background:#2d7;border:0;color:#06210f;font-weight:700;padding:9px 14px;border-radius:6px;cursor:pointer;font-size:14px}
+ button.alt{background:#39c;color:#04121f}
+ button.warn{background:#e85;color:#2a0d04}
+ .dpad{display:grid;grid-template-columns:repeat(3,62px);gap:6px;justify-content:center;margin-top:10px}
+ .dpad button{padding:0;height:50px;font-size:20px;background:#2a2d34;color:#e6e6e6;border:1px solid #3a3d44}
+ .dpad button.stop{background:#933;color:#fff}
+ .bar{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap}
+ #msg,#drvmsg{font-size:13px;color:#7fd1b9}
+ b.k{color:#cdd3dc;font-weight:600}
+</style></head><body>
+<header>🦆 Duckiebot — project task (REAL BOT) — live debug + manual drive + tuning</header>
+<div class="wrap">
+  <div class="col">
+    <div class="card"><h2>Camera (agent view + HUD)</h2><img src="/video">
+      <div class="legend">Boxes = detected signs/objects · top banner = FSM state + why it's stopped ·
+        bottom strip = lane error + flags. <a href="/raw" style="color:#39c">/raw</a> = clean frame for HSV tuning.</div></div>
+    <div class="card"><h2>Drive control</h2>
+      <div class="bar">
+        <button id="manualBtn" class="alt" onclick="toggleManual()">Take manual control</button>
+        <button onclick="restartAgent()">Restart agent</button>
+        <span id="drvmsg">agent driving</span>
+      </div>
+      <div id="dpad" class="dpad" style="display:none">
+        <span></span><button data-l="0.4" data-r="0.4">&#9650;</button><span></span>
+        <button data-l="-0.36" data-r="0.36">&#9664;</button>
+        <button class="stop" data-l="0" data-r="0">&#9632;</button>
+        <button data-l="0.36" data-r="-0.36">&#9654;</button>
+        <span></span><button data-l="-0.4" data-r="-0.4">&#9660;</button><span></span>
+      </div>
+      <div class="legend" id="drvhint" style="display:none">Keyboard <b class="k">W/A/S/D</b> or arrows · <b class="k">Space</b>=stop.
+        Hold to move, release to stop. The agent is paused (wheels only) while you hold manual control.</div>
+    </div>
+  </div>
+  <div class="col">
+    <div class="card"><h2>Live bot status</h2>
+      <div id="status" style="font-size:14px;line-height:1.8">waiting for telemetry…</div>
+    </div>
+    <div class="card"><h2>Live config (tune on the bot)</h2>
+      <div id="cfg">loading…</div>
+      <div class="bar">
+        <button onclick="save(true)">Save &amp; Apply (restart agent)</button>
+        <button class="alt" onclick="save(false)">Save (lane-HSV live, no restart)</button>
+        <span id="msg"></span>
+      </div>
+      <div class="legend">Open <b class="k">lane_hsv_bot</b> / <b class="k">lane_servoing_bot</b> and watch the camera.
+        HSV changes apply live; gains/speeds/sign-gates need "Save &amp; Apply". Edits persist to the bot's YAMLs.</div>
+    </div>
+  </div>
+</div>
+<script>
+let CFG={};
+function render(){let h='';for(const sec in CFG){h+='<details class="sec"'+(sec.indexOf('hsv')>=0||sec.indexOf('servoing')>=0?' open':'')+'><summary>'+sec+'</summary><div class="grid">';for(const k in CFG[sec]){if(k==='_error'){h+='<label style="color:#e66">'+CFG[sec][k]+'</label><span></span>';continue;}h+='<label>'+k+'</label><input data-s="'+sec+'" data-k="'+k+'" value="'+CFG[sec][k]+'">';}h+='</div></details>';}document.getElementById('cfg').innerHTML=h;}
+async function load(){try{CFG=await(await fetch('/config')).json();render();}catch(e){}}
+async function save(restart){const body={};document.querySelectorAll('#cfg input').forEach(i=>{const s=i.dataset.s,k=i.dataset.k;(body[s]=body[s]||{})[k]=i.value;});document.getElementById('msg').textContent='saving…';try{const r=await fetch('/config?restart='+(restart?1:0),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();document.getElementById('msg').textContent='saved '+(j.saved||[]).join(', ')+(j.agent_restarted?' · agent restarted':' · live');}catch(e){document.getElementById('msg').textContent='save failed';}}
+// ---- manual drive (bot-safe: agent applies the command) ----
+let manualOn=false,hb=null,held=new Set(),btn=null;
+function clamp(x){return Math.max(-0.6,Math.min(0.6,x));}
+function compute(){if(btn)return btn;const t=(held.has('f')?1:0)-(held.has('b')?1:0);const s=(held.has('r')?1:0)-(held.has('l')?1:0);return [clamp(t*0.4+s*0.36),clamp(t*0.4-s*0.36)];}
+async function sendDrive(l,r){try{await fetch('/drive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({left:l,right:r})});}catch(e){}}
+function pump(){if(!manualOn)return;const c=compute();sendDrive(c[0],c[1]);}
+async function toggleManual(){manualOn=!manualOn;try{await fetch('/manual',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:manualOn})});}catch(e){}
+ document.getElementById('manualBtn').textContent=manualOn?'Release (resume agent)':'Take manual control';
+ document.getElementById('dpad').style.display=manualOn?'grid':'none';
+ document.getElementById('drvhint').style.display=manualOn?'block':'none';
+ document.getElementById('drvmsg').textContent=manualOn?'MANUAL — agent paused (wheels)':'agent driving';
+ if(manualOn){if(!hb)hb=setInterval(pump,120);}else{if(hb){clearInterval(hb);hb=null;}held.clear();btn=null;}}
+async function restartAgent(){manualOn=false;if(hb){clearInterval(hb);hb=null;}held.clear();btn=null;
+ document.getElementById('manualBtn').textContent='Take manual control';document.getElementById('dpad').style.display='none';document.getElementById('drvhint').style.display='none';
+ document.getElementById('drvmsg').textContent='restarting agent…';try{await fetch('/restart',{method:'POST'});}catch(e){}
+ setTimeout(()=>{document.getElementById('drvmsg').textContent='agent driving';load();},1500);}
+const KEYMAP={KeyW:'f',ArrowUp:'f',KeyS:'b',ArrowDown:'b',KeyA:'l',ArrowLeft:'l',KeyD:'r',ArrowRight:'r'};
+document.addEventListener('keydown',e=>{if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;if(!manualOn)return;if(e.code==='Space'){held.clear();btn=null;sendDrive(0,0);e.preventDefault();return;}const k=KEYMAP[e.code];if(!k)return;held.add(k);e.preventDefault();pump();});
+document.addEventListener('keyup',e=>{if(!manualOn)return;const k=KEYMAP[e.code];if(!k)return;held.delete(k);if(held.size===0&&!btn)sendDrive(0,0);else pump();});
+document.querySelectorAll('#dpad button').forEach(b=>{const l=parseFloat(b.dataset.l),r=parseFloat(b.dataset.r);const dn=ev=>{ev.preventDefault();if(!manualOn)return;btn=[l,r];sendDrive(l,r);};const up=ev=>{ev.preventDefault();btn=null;if(manualOn&&held.size===0)sendDrive(0,0);};b.addEventListener('mousedown',dn);b.addEventListener('mouseup',up);b.addEventListener('mouseleave',up);b.addEventListener('touchstart',dn);b.addEventListener('touchend',up);});
+// ---- live status ----
+function fmtTags(ts){if(!ts||!ts.length)return '<span style="color:#666">none</span>';return ts.map(t=>t.id+':'+t.meaning+(t.side_px?(' '+t.side_px+'px'):'')+(t.est_distance_m!=null?(' @'+t.est_distance_m.toFixed(2)+'m'):'')).join(' · ');}
+const SC={DRIVE:'#2d7',APPROACH:'#fc3',STOPPED:'#e85',WAIT:'#e85',SOFT_STOP:'#e66',TURN_LEFT:'#39c',TURN_RIGHT:'#39c',STRAIGHT_THROUGH:'#39c'};
+setInterval(async()=>{let d;try{d=await(await fetch('/telemetry')).json();}catch(e){return;}if(!d||!d.state)return;const l=d.light||{},lane=d.lane||{};
+ document.getElementById('status').innerHTML=
+  'state <b style="color:'+(SC[d.state]||'#fff')+'">'+d.state+'</b>'+(d.event?(' <span style="color:#9aa0aa">(via '+d.event+')</span>'):'')
+  +' · speed '+(d.current_speed!=null?d.current_speed.toFixed(2):'?')
+  +'<br>signs: '+fmtTags(d.tags)
+  +'<br>lane err <b class="k">'+(lane.error!=null?lane.error.toFixed(2):'?')+'</b>'+(lane.detected?'':' <span style="color:#e66">NO-LANE</span>')
+  +' · wheels L/R '+(d.wheels?d.wheels.left.toFixed(2)+'/'+d.wheels.right.toFixed(2):'?')
+  +'<br>red line <b style="color:'+(d.red_line?'#e55':'#666')+'">'+(d.red_line?'AT LINE':'no')+'</b>'
+  +' ('+(d.red_line_px!=null?d.red_line_px:'?')+'/'+(d.red_line_thr!=null?d.red_line_thr:'?')+'px)'
+  +' · band '+(d.red_band?'<b style="color:#e55">yes</b>':'no')
+  +'<br>obstacle <b style="color:'+(d.obstacle_stop?'#e55':'#666')+'">'+(d.obstacle_stop?'STOP':'clear')+'</b>'
+  +(d.bot_ahead?' · <b style="color:#e55">bot ahead</b>':'')
+  +' · light '+(l.color?('<b>'+l.color+'</b>'+(l.armed?' (armed)':'')):'—')
+  +(d.legal_turns?('<br>legal turns: <b class="k">'+d.legal_turns.join(', ')+'</b>'):'')
+  +(d.chosen_turn?(' · chose: <b class="k">'+d.chosen_turn+'</b>'):'')
+  +(d.junction_cross?(' · crossing: <b style="color:#39c">'+d.junction_cross+'</b>'):'');
+},500);
+load();
+</script></body></html>"""
 
 
 def main():
@@ -334,37 +645,13 @@ def main():
     print('  Camera: ok', flush=True)
 
     print('\n[4/4] Starting agent...', flush=True)
-    timings, overlay_keys = _load_bot_timings()
-    lane_cfg = _bot_lane_config_path()
-    hsv_keys = _apply_bot_lane_hsv()
+    # _start_agent loads bot config + applies lane HSV + spawns the agent thread
+    # (with the bot-safe manual_cmd hook). It's the SAME path the dashboard's
+    # Restart/Save-&-Apply use, so a restart picks up edited config identically.
+    overlay_keys = _start_agent()
     print(f"  bot timing overrides: {overlay_keys or 'none'}", flush=True)
-    print(f"  bot lane config: {lane_cfg or 'default (sim-tuned!)'}", flush=True)
-    print(f"  bot lane HSV overrides: {hsv_keys or 'none'}", flush=True)
-    stop_event.clear()
-
-    def _run_agent():
-        # agent.main runs in a daemon thread; if it raises (a setup error such as
-        # a failed model load, or an unhandled per-frame error) the thread would
-        # otherwise die SILENTLY — wheels left at zero and Flask still serving
-        # stale telemetry, so the bot just looks "frozen at startup" with no error
-        # anywhere visible. Catch + print the full traceback (it lands in the bot
-        # daemon's task log) and zero the wheels, so the failure is diagnosable.
-        try:
-            agent.main(camera, wheels, leds, stop_event,
-                       timings_override=timings, lane_config_path=lane_cfg,
-                       observer=_observe, frame_observer=_frame_observe)
-        except Exception as e:
-            print('=' * 60, flush=True)
-            print(f'AGENT THREAD CRASHED: {e!r}', flush=True)
-            traceback.print_exc()
-            print('=' * 60, flush=True)
-            try:
-                wheels.set_wheels_speed(0.0, 0.0)
-            except Exception:
-                pass
-
-    threading.Thread(target=_run_agent, daemon=True, name='AgentThread').start()
-    print('  agent.main() running', flush=True)
+    print(f"  bot lane config: {_bot_lane_config_path() or 'default (sim-tuned!)'}", flush=True)
+    print('  agent.main() running (manual drive + live config available on the dashboard)', flush=True)
 
     def _shutdown(signum, frame):
         print('\nShutting down...')

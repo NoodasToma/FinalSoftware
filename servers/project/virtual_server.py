@@ -122,12 +122,15 @@ def _observe(snap):
     except Exception:
         pass
 
-# Manual-drive state. While manual mode is on the agent thread is paused and the
-# wheels are driven only by /drive commands. A watchdog zeros the wheels if no
-# command arrives for _MANUAL_TIMEOUT_S, so a dropped/closed client can't leave
-# the bot running away.
+# Manual-drive state. While manual mode is on the agent KEEPS RUNNING (perceiving +
+# logging) but its wheel writes are gated off (drive_gate), and a dedicated
+# server-side loop drives the wheels at a steady rate from the latest /drive
+# command. This decouples the wheel rate from the browser's pump rate and avoids
+# stopping/joining the agent thread (which raced the camera read). If no /drive
+# arrives for _MANUAL_TIMEOUT_S the held command decays to 0, so a dropped/closed
+# client can't leave the bot running away.
 _manual_lock = threading.Lock()
-_manual = {'on': False, 'last_cmd': 0.0}
+_manual = {'on': False, 'last_cmd': 0.0, 'left': 0.0, 'right': 0.0}
 _MANUAL_TIMEOUT_S = 0.4
 
 # ----------------------------------------------------------------------------- config
@@ -168,7 +171,14 @@ def save_section(name: str, values: dict) -> None:
 
 def _apply_lane_hsv_live() -> None:
     """Push lane-HSV bounds into the (module-global) lane detector so the change
-    takes effect immediately, without an agent restart."""
+    takes effect immediately, without an agent restart. Also applies chunky_fill:
+    the yellow CENTRE line is DASHED (filled squares), so plain edge-AND keeps only
+    each dash's thin border and the yellow mask is sparse — the bot then tracks the
+    solid WHITE edge only and drifts onto the yellow on curves. chunky_fill dilates
+    the edge so each dash fills in to a solid blob (like the white line), ~doubling
+    yellow detection with NO lane-centre bias and NO road flood (it only fills where
+    the colour is already yellow). Default ON in the sim; toggle via the lane_hsv
+    config (chunky_fill: false) in the dashboard editor."""
     try:
         with open(CONFIG_FILES['lane_hsv']) as fh:
             h = yaml.safe_load(fh) or {}
@@ -178,6 +188,10 @@ def _apply_lane_hsv_live() -> None:
             [h.get('white_lower_h', 0),  h.get('white_lower_s', 0),  h.get('white_lower_v', 0)],
             [h.get('white_upper_h', 0),  h.get('white_upper_s', 0),  h.get('white_upper_v', 0)],
         )
+        _cf = h.get('chunky_fill', True)
+        if isinstance(_cf, str):
+            _cf = _cf.strip().lower() not in ('false', '0', 'no', 'off', '')
+        lane_hsv.set_chunky_fill(bool(_cf))
     except Exception as e:
         print(f'[dashboard] lane HSV live-apply failed: {e}')
 
@@ -353,10 +367,40 @@ def _start_agent():
             pass
     _telemetry = TelemetryLogger(os.path.join(project_root, '_sim_logs', 'live'),
                                  wheels=wheels, label='live', keep_records=False)
+
+    # AGENT SELECTION (sim). `sign_agent: true` in the sim maneuver_timings.yaml runs
+    # the REFERENCE sign-detection agent (lane servoing + the ported KvatiTown
+    # SignBehaviorFSM — executes the turn open-loop so the sign decision wins over the
+    # lane); otherwise the project's default agent.main runs. Default false => the sim
+    # is byte-identical to before. Flip it live in the dashboard config editor
+    # (maneuver_timings -> sign_agent: true) + Save & Apply.
+    try:
+        with open(CONFIG_FILES['maneuver_timings']) as _fh:
+            _sim_timings = yaml.safe_load(_fh) or {}
+    except Exception:
+        _sim_timings = {}
+
+    # Both agents take observer + drive_gate (sim manual drive); agent.main also takes
+    # the sim camera-intrinsics fidelity kwargs (it uses pupil_apriltags). agent_signs
+    # uses the reference's own cv2.aruco detector (no intrinsics) and reads the sim
+    # timings for its detector cadence / duck-HSV config.
+    if _sim_timings.get('sign_agent'):
+        import tasks.project.packages.agent_signs as agent_signs
+        print('[sim] using REFERENCE sign-detection agent (sign_agent: true)', flush=True)
+        _target = agent_signs.main
+        _kwargs = dict(observer=_observe, drive_gate=lambda: not _manual['on'],
+                       timings=_sim_timings, sign_config=_sim_timings.get('sign_config') or None)
+    else:
+        _target = agent.main
+        # drive_gate lets manual drive take the wheels WITHOUT stopping the agent
+        # thread: while _manual['on'] the agent keeps perceiving + logging but its
+        # wheel writes become no-ops, so it can't fight the manual commands.
+        _kwargs = dict(observer=_observe, drive_gate=lambda: not _manual['on'],
+                       **sim_fidelity_kwargs())
+
     _agent_thread = threading.Thread(
-        target=agent.main, args=(camera, wheels, leds, _agent_stop),
-        kwargs=dict(observer=_observe, **sim_fidelity_kwargs()),
-        daemon=True, name='AgentThread')
+        target=_target, args=(camera, wheels, leds, _agent_stop),
+        kwargs=_kwargs, daemon=True, name='AgentThread')
     _agent_thread.start()
 
 
@@ -442,12 +486,8 @@ def _run_demo():
             'STOPPED' in st and any(s in st for s in ('TURN_LEFT', 'TURN_RIGHT', 'STRAIGHT_THROUGH')),
             ' → '.join(['DRIVE'] + st) or 'no transitions')
 
-        _demo['current'] = 'Traffic light → stop on red, go on green'
-        tr = _demo_run_agent(5.85, 4.45, 0.0, 24)
-        st = [t[2] for t in tr]
-        rec('T2 traffic light: stop on red, go on green',
-            'see_light' in [t[1] for t in tr] and 'STOPPED' in st,
-            ' → '.join(['DRIVE'] + st) or 'no transitions')
+        # (Traffic light station removed — the light was stashed out of the sim
+        #  scene; see tasks/project/_stashed/traffic_lights/.)
 
         _demo['current'] = 'Obstacle → soft stop for duckie'
         tr = _demo_run_agent(4.5, 1.632, 270.0, 8)
@@ -520,32 +560,48 @@ def _run_tests(only=None):
 
 
 def _set_manual(on: bool) -> None:
-    """Enter/leave manual drive. Entering pauses the agent; leaving resumes it."""
+    """Enter/leave manual drive. The agent thread keeps running either way — its
+    wheel writes are simply gated off while manual is on (drive_gate). Entering
+    zeroes the wheels so the bot waits for the operator; leaving lets the agent
+    resume driving on its very next loop (no thread restart, no camera-read race)."""
     with _manual_lock:
-        was = _manual['on']
         _manual['on'] = on
         _manual['last_cmd'] = time.time()
-    if on and not was:
-        _stop_agent()
-    elif not on and was:
+        _manual['left'] = 0.0
+        _manual['right'] = 0.0
+    try:
+        wheels.set_wheels_speed(0.0, 0.0)
+    except Exception:
+        pass
+
+
+def _force_manual_off() -> None:
+    """Clear manual mode AND the held command (so a later manual re-entry can't
+    lurch on a stale value). Used by the agent-control endpoints (restart/reset/
+    demo/test/scenario) that take the wheels back from the operator."""
+    with _manual_lock:
+        _manual['on'] = False
+        _manual['left'] = 0.0
+        _manual['right'] = 0.0
+
+
+def _manual_drive_loop():
+    """Server-side manual driver: while manual mode is on, push the latest held
+    /drive command to the wheels at a steady ~50 Hz (independent of how often the
+    browser sends one), and decay to 0 if no command arrived within the timeout so
+    a dropped client can't run the bot away. Off-mode is idle (the agent drives)."""
+    while True:
+        time.sleep(0.02)                    # ~50 Hz, matches the agent loop
+        with _manual_lock:
+            if not _manual['on']:
+                continue
+            stale = (time.time() - _manual['last_cmd']) > _MANUAL_TIMEOUT_S
+            l = 0.0 if stale else _manual['left']
+            r = 0.0 if stale else _manual['right']
         try:
-            wheels.set_wheels_speed(0.0, 0.0)
+            wheels.set_wheels_speed(l, r)
         except Exception:
             pass
-        _start_agent()
-
-
-def _manual_watchdog():
-    """Zero the wheels if manual mode is on but no /drive arrived recently."""
-    while True:
-        time.sleep(0.1)
-        with _manual_lock:
-            on, last = _manual['on'], _manual['last_cmd']
-        if on and (time.time() - last) > _MANUAL_TIMEOUT_S:
-            try:
-                wheels.set_wheels_speed(0.0, 0.0)
-            except Exception:
-                pass
 
 
 # ----------------------------------------------------------------------------- routes
@@ -555,7 +611,13 @@ generate_frames = make_frame_generator(lambda: camera, lambda f: f if f is not N
 
 @app.route('/')
 def index():
-    return Response(_PAGE, mimetype='text/html')
+    # no-cache so the browser never serves a stale dashboard after a server restart
+    # (the page is embedded in this process; editing the file needs a sim restart,
+    # and a cached old page is the #1 cause of "the buttons don't work").
+    resp = Response(_PAGE, mimetype='text/html')
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    return resp
 
 
 @app.route('/video')
@@ -592,8 +654,7 @@ def post_config():
 
 @app.route('/restart', methods=['POST'])
 def restart():
-    with _manual_lock:
-        _manual['on'] = False
+    _force_manual_off()
     _restart_agent()
     return jsonify({'status': 'ok'})
 
@@ -602,8 +663,7 @@ def restart():
 def reset():
     """FULL simulation reset: teleport the bot back to its spawn (Godot reset)
     AND restart the agent from a clean state. Godot keeps running."""
-    with _manual_lock:
-        _manual['on'] = False
+    _force_manual_off()
     # stop the agent first so it isn't fighting the reset
     _stop_agent()
     try:
@@ -619,8 +679,7 @@ def reset():
 def demo():
     if _demo['running']:
         return jsonify({'status': 'busy'})
-    with _manual_lock:
-        _manual['on'] = False
+    _force_manual_off()
     threading.Thread(target=_run_demo, daemon=True, name='TaskDemo').start()
     return jsonify({'status': 'started'})
 
@@ -657,8 +716,7 @@ def test_run():
         return jsonify({'status': 'busy'})
     data = request.get_json(silent=True) or {}
     only = data.get('name') if data.get('mode') == 'sign' else None
-    with _manual_lock:
-        _manual['on'] = False
+    _force_manual_off()
     threading.Thread(target=_run_tests, kwargs={'only': only},
                      daemon=True, name='CourseTests').start()
     return jsonify({'status': 'started', 'only': only})
@@ -683,8 +741,7 @@ def scenario(name):
     if sc is None:
         return jsonify({'status': 'error', 'msg': f'unknown scenario {name!r}',
                         'known': sorted(SCENARIOS)}), 404
-    with _manual_lock:
-        _manual['on'] = False
+    _force_manual_off()
     x, z, heading, blurb = sc
     _stop_agent()
     try:
@@ -706,22 +763,24 @@ def manual():
 
 @app.route('/drive', methods=['POST'])
 def drive():
-    if not _manual['on']:
-        return jsonify({'status': 'error',
-                        'msg': 'not in manual mode; POST /manual {"on": true} first'}), 409
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
     try:
         left  = max(-0.8, min(0.8, float(data.get('left', 0.0))))
         right = max(-0.8, min(0.8, float(data.get('right', 0.0))))
     except (TypeError, ValueError):
         return jsonify({'status': 'error', 'msg': 'left/right must be numbers'}), 400
+    # AUTO-ENABLE manual on the first drive command (no 409 race with /manual): a
+    # drive command can only come from the dashboard, so receiving one means the
+    # operator wants manual control. This makes WASD "just work" even before /manual
+    # has been acknowledged. Store the command; _manual_drive_loop pushes it to the
+    # wheels at a steady rate (we do NOT write the wheels here).
     with _manual_lock:
+        if not _manual['on']:
+            _manual['on'] = True
+        _manual['left'] = left
+        _manual['right'] = right
         _manual['last_cmd'] = time.time()
-    try:
-        wheels.set_wheels_speed(left, right)
-    except Exception as e:
-        return jsonify({'status': 'error', 'msg': str(e)}), 500
-    return jsonify({'status': 'ok', 'left': left, 'right': right})
+    return jsonify({'status': 'ok', 'manual': True, 'left': left, 'right': right})
 
 
 @app.route('/shutdown')
@@ -765,7 +824,7 @@ def main():
     _start_agent()
     debug_proc = DebugProcessor(lambda: camera)
     debug_proc.start()
-    threading.Thread(target=_manual_watchdog, daemon=True, name='ManualWatchdog').start()
+    threading.Thread(target=_manual_drive_loop, daemon=True, name='ManualDrive').start()
 
     def _shutdown(signum, frame):
         shutdown_cleanup(wheels, camera, _agent_stop)
@@ -992,10 +1051,15 @@ setInterval(async()=>{
 },600);
 const KEYMAP={KeyW:'f',ArrowUp:'f',KeyS:'b',ArrowDown:'b',KeyA:'l',ArrowLeft:'l',KeyD:'r',ArrowRight:'r'};
 document.addEventListener('keydown',e=>{
+ // don't hijack typing in the config editor
  if(e.target&&(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'))return;
- if(!manualOn)return;
+ const k=KEYMAP[e.code];
+ const isDrive = !!k || e.code==='Space';
+ if(!isDrive) return;
+ // AUTO-ENGAGE manual on the first drive key — no need to click the button first.
+ if(!manualOn){ toggleManual(); }
  if(e.code==='Space'){held.clear();btn=null;sendDrive(0,0);e.preventDefault();return;}
- const k=KEYMAP[e.code]; if(!k)return; held.add(k); e.preventDefault(); pump();
+ if(!k)return; held.add(k); e.preventDefault(); pump();
 });
 document.addEventListener('keyup',e=>{
  if(!manualOn)return; const k=KEYMAP[e.code]; if(!k)return;
@@ -1020,7 +1084,7 @@ async function pollLog(){
  for(const e of es){ _logId=e.id;
    add+='<span style="color:#556">'+e.t.toFixed(1)+'</span> '
        +'<span style="color:'+(col[e.type]||'#9aa0aa')+'">'+e.type+'</span> '
-       +(''+e.msg).replace(/</g,'&lt;')+'\n';
+       +(''+e.msg).replace(/</g,'&lt;')+'\\n';
  }
  box.innerHTML+=add;
  if(atBottom) box.scrollTop=box.scrollHeight;

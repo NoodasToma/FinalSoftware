@@ -100,6 +100,47 @@ def _load_hsv_cfg() -> dict:
 _IO_LOCK = threading.Lock()
 
 
+def _select_duck_mode(detect_mode: str, model_ok: bool, hsv_allowed: bool) -> str:
+    """Choose the duckie-detection backend -> 'model' | 'hsv' | 'off'.
+
+    'model' = trained YOLO only (never mistakes yellow lane DASHES for ducks);
+    'off' if it can't load. 'hsv' = colour+shape fallback. 'auto' = model if it
+    loads, else HSV (so the real bot still brakes for ducks). Pure (no I/O) so it
+    is unit-testable; main() handles the logging."""
+    mode = (detect_mode or 'auto').strip().lower()
+    if mode == 'model':
+        return 'model' if model_ok else 'off'
+    if mode == 'hsv':
+        return 'hsv' if hsv_allowed else 'off'
+    # 'auto' (and any unknown value): prefer the model, fall back to HSV
+    if model_ok:
+        return 'model'
+    if hsv_allowed:
+        return 'hsv'
+    return 'off'
+
+
+def _junction_cross_wheels(direction, speed, strength):
+    """ABSOLUTE wheel command to cross a junction in the CHOSEN legal direction, so
+    the SIGN's decision drives the junction — NOT lane-following. (Lane servoing
+    follows the white/yellow lines and, in a junction box, the white line leads the
+    WRONG way: the bot chose left but the white line pulled it right. So during the
+    crossing the lane signal is ignored and the bot drives this commanded turn; once
+    it's across, lane-following resumes and re-centres on the outgoing lane.)
+      * 'left'     -> left wheel slow, right wheel fast  (forward-left arc)
+      * 'right'    -> the mirror
+      * 'straight' -> equal wheels (roll straight through the box)
+    `speed` is the forward speed, `strength` the L/R differential (turn sharpness).
+    Returns (left, right) clipped to [0, 1]. Pure (no I/O) so it's unit-testable."""
+    if direction == 'left':
+        l, r = speed - strength, speed + strength
+    elif direction == 'right':
+        l, r = speed + strength, speed - strength
+    else:                              # 'straight'
+        l, r = speed, speed
+    return (max(0.0, min(1.0, l)), max(0.0, min(1.0, r)))
+
+
 def _set_brake(leds, on: bool) -> None:
     if leds is None:
         return
@@ -143,7 +184,8 @@ def _direction_of(state: State) -> str:
 def _derive_event(state, signs, obstacles, frame_h, lane_mask,
                   ignore_signs=False, stop_distance_m=0.25,
                   at_red_line=False, react_distance_m=1.5,
-                  react_min_px=0, stop_min_px=0, red_band=False) -> Optional[str]:
+                  react_min_px=0, stop_min_px=0, red_band=False,
+                  use_red_band=True) -> Optional[str]:
     if state in (State.DRIVE, State.APPROACH):
         stop, _ = should_stop_for_obstacle(obstacles, frame_h)
         if stop:
@@ -192,18 +234,19 @@ def _derive_event(state, signs, obstacles, frame_h, lane_mask,
         vis_px = max((o.side_length_px for o, sem in signs
                       if _triggers_approach(sem.kind)), default=0)
         if stop_min_px > 0:
-            # UNCALIBRATED PROXIMITY MODE (the bot's default — no camera
-            # intrinsics). Two ways to know we're AT the line, whichever first:
-            #  1) the ROBUST red BAND (a wide horizontal red bar across the lane)
-            #     once the sign is near enough to be THIS junction's (react gate).
-            #     This is the preferred trigger — it stops the bot ON the painted
-            #     line. The raw red-pixel count is NOT used (the venue's red/orange
-            #     markings make it spike far from any line); the band's structure
-            #     test rejects that noise.
-            #  2) FAILSAFE: the tag grew past stop_min_px (very close) but no band
-            #     was seen — stop anyway so a washed-out/!missing line can't make
-            #     the bot drive through the intersection.
-            if vis_px >= react_min_px and red_band:
+            # UNCALIBRATED PROXIMITY MODE (the bot's default — no camera intrinsics).
+            # The instruction is executed ONLY at the LATEST, most-certain moments:
+            #  1) the tag is VERY CLOSE (>= stop_min_px) — we're right at the sign, OR
+            #  2) the tag is NO LONGER VISIBLE after having gotten close (handled by
+            #     the lost-sign commit in main() — the tag rose overhead as we reached
+            #     the line). These are the two triggers the bot should use.
+            # The red-BAND trigger is OPTIONAL (use_red_band) and OFF on the real bot:
+            # the venue's stop line is desaturated orange and the band detector both
+            # misses it AND can false-fire on scattered red/orange markings, stopping
+            # the bot EARLY. With it off, the bot keeps lane-following until it's
+            # genuinely at the sign (tag very close / tag gone). The sim, which has a
+            # clean painted line, leaves it on.
+            if use_red_band and vis_px >= react_min_px and red_band:
                 return 'at_stop_line'
             if vis_px >= stop_min_px:
                 return 'at_stop_line'
@@ -266,7 +309,8 @@ def _wait_timed_out(intersection_since, now, timings, obstacles, frame_h) -> boo
 
 def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None,
          apriltag_intrinsics=None, apriltag_tag_size=None,
-         timings_override=None, lane_config_path=None):
+         timings_override=None, lane_config_path=None, drive_gate=None,
+         manual_cmd=None):
     """Main perception -> decision -> motor loop (same on bot and in sim).
 
     The keyword-only args are PLATFORM hooks with no-op defaults, so a bare
@@ -275,6 +319,24 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                               the agent perceived + decided (pose-less; the sim
                               telemetry logger enriches it with Godot pose).
                               None -> zero overhead.   [sim]
+      * drive_gate():         optional predicate, polled before every wheel write.
+                              When it returns False the agent does ALL its
+                              perception/decision/telemetry as usual but does NOT
+                              touch the wheels — so an external controller (the sim
+                              dashboard's MANUAL DRIVE) can own the motors WITHOUT
+                              stopping/joining the agent thread (which raced the
+                              camera read and let a zombie loop fight the manual
+                              commands). None -> the agent always drives. [sim]
+      * manual_cmd():         optional callback returning (left, right) to DRIVE the
+                              wheels, or None for "agent drives normally". When it
+                              returns a command the agent writes THAT instead of its
+                              own — through its OWN single I2C-locked writer, so there
+                              is never a second wheel-writer thread (the bot shares one
+                              I2C bus for wheels+LEDs; a 2nd writer caused OSError(121)
+                              crashes). This is how the BOT dashboard does manual drive
+                              safely. Perception/telemetry keep running. None -> off.
+                              (Takes precedence over drive_gate; the bot uses this, the
+                              sim uses drive_gate.)  [bot]
       * apriltag_intrinsics:  (fx, fy, cx, cy) for the AprilTag detector so the
                               sim computes a real est_distance_m. None -> the
                               detector's normal file search (the real bot reads
@@ -314,6 +376,48 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     # grows to the stop size, so it never stops). The metric equivalent is
     # line_straight_distance_m, which is dead on an inf-distance camera. 0 disables.
     _line_straight_px = float(timings.get('line_straight_px', 0))
+    # Whether the red-BAND detector may trigger the stop in proximity mode. The real
+    # bot sets this false: its orange stop line both evades the band detector AND lets
+    # scattered red/orange markings false-fire it, stopping the bot EARLY — so the bot
+    # commits ONLY on tag-very-close (sign_stop_px) or tag-gone (lost-sign commit). The
+    # sim (clean painted line) leaves it true.
+    _sign_use_red_band = bool(timings.get('sign_use_red_band', True))
+    # Intersection behaviour at the stop line, AFTER the sign's rules are applied:
+    #   'maneuver'    -> execute a closed legal turn as an open-loop encoder-tick ARC
+    #                    (sim default; the rubric "choose a random turn" demo).
+    #   'lane_follow' -> do NOT drive a pre-scripted arc; resume visual lane-following
+    #                    through the junction (the real bot — its open-loop arc was
+    #                    uncalibrated for this venue and drove off the road). The legal
+    #                    turn is still chosen + logged; only the MOTION differs.
+    _turn_mode = str(timings.get('turn_mode', 'maneuver'))
+    # JUNCTION CROSSING (lane_follow only). Lane servoing follows the white/yellow
+    # lines; in a junction box the white line leads the WRONG way, so pure lane-
+    # following ignored the sign (chose left but went right). When junction_lane_bias
+    # > 0, after the stop the SIGN's chosen direction DRIVES THE WHEELS DIRECTLY for
+    # junction_cross_seconds (lane ignored during the crossing), then lane-following
+    # resumes. junction_lane_bias = the L/R differential (turn sharpness);
+    # junction_cross_speed = forward speed during the turn. 0.0 (default) = pure
+    # lane_follow (feature off); the bot config opts in.
+    _junction_bias = float(timings.get('junction_lane_bias', 0.0))
+    _junction_cross_speed = float(timings.get('junction_cross_speed', 0.3))
+    _junction_cross_s = float(timings.get('junction_cross_seconds', 1.5))
+    # Sign-approach behaviour.
+    #   approach_creep: false  -> NO approach mechanic (the real bot): the bot keeps
+    #       FOLLOWING THE LANE at normal speed while a sign is in view and only ACTS
+    #       on it (stop + apply rules) at the commit point — the sign is no longer
+    #       visible after getting close (≈ red line reached), the sign is very close
+    #       (sign_stop_px / stop_distance_m), or the red line/band is seen.
+    #   approach_creep: true (DEFAULT) -> legacy decelerate-and-creep approach (ramp
+    #       to approach_creep_speed, brake LEDs, dead-straight creep). The SIM keeps
+    #       this so its smooth-stop rubric demo + Godot harnesses are unchanged; the
+    #       bot overlay (maneuver_timings_bot.yaml) sets it false. Flip it live in the
+    #       sim dashboard's config editor to watch the no-approach behaviour in sim.
+    # Parse robustly: YAML gives a real bool, but the dashboard config editor / a
+    # hand-edited file can deliver the STRING "false" — and bool("false") is True in
+    # Python, so a naive bool() would silently ignore the toggle.
+    _ac_raw = timings.get('approach_creep', True)
+    _approach_creep = (_ac_raw if isinstance(_ac_raw, bool)
+                       else str(_ac_raw).strip().lower() not in ('false', '0', 'no', 'off', ''))
 
     lane  = LaneServoingAgent(config_path=lane_config_path)
     light = TrafficLightDetector()
@@ -333,24 +437,46 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     # Disable entirely with `object_detection: false` in the timings.
     _obj_enabled = bool(timings.get('object_detection', True))
     obj = ObjectDetectionAgent() if _obj_enabled else None
-    # Pick the duckie-detection backend. The trained model is best, but it needs
-    # onnxruntime or a recent OpenCV — the real bot has neither (OpenCV 4.1.1's
-    # cv2.dnn can't parse the YOLOv5 ONNX). So when the model can't load we fall
-    # back to the dependency-free HSV+shape detector (perception/duck_hsv.py),
-    # which runs on the bot's stock OpenCV. Both emit [(bbox, score, 0)] in
-    # full-frame pixels, so the rest of the obstacle/SOFT_STOP path is identical.
-    if obj is not None and obj.model_loaded:
-        _duck_mode = 'model'
-    elif _obj_enabled and bool(timings.get('duck_hsv', True)):
-        _duck_mode = 'hsv'
-    else:
-        _duck_mode = 'off'
+    # Pick the duckie-detection backend, governed by `duck_detect_mode`:
+    #   'model' : ONLY the trained YOLO model. The model is trained on duckies, so
+    #             the yellow lane DASHES (same colour as a duck) are NEVER detected
+    #             as ducks — the colour-based HSV path CAN confuse them, the model
+    #             cannot. Use this wherever the model loads (sim, or a bot with
+    #             onnxruntime). If the model can't load, duck detection is OFF (the
+    #             bot will NOT brake for ducks) — so don't use 'model' on a bot that
+    #             can't run the model; use 'auto' there.
+    #   'hsv'   : force the dependency-free HSV+shape detector (perception/duck_hsv.py).
+    #   'auto'  : (default) prefer the model; fall back to HSV only if it can't load
+    #             — keeps the real bot (OpenCV 4.1.1, no onnxruntime) braking for
+    #             ducks instead of going blind. duck_hsv's shape/solidity/lane-aware
+    #             gates reject most dashes, but the model is the gold standard.
+    # Both backends emit [(bbox, score, 0)] in full-frame pixels, so the rest of the
+    # obstacle/SOFT_STOP path is identical regardless of which is chosen.
+    _duck_detect_mode = str(timings.get('duck_detect_mode', 'auto')).strip().lower()
+    _model_ok = obj is not None and obj.model_loaded
+    _hsv_allowed = _obj_enabled and bool(timings.get('duck_hsv', True))
+    _duck_mode = _select_duck_mode(_duck_detect_mode, _model_ok, _hsv_allowed)
+    if _duck_detect_mode == 'model' and not _model_ok:
+        print("[agent] duck_detect_mode=model but the YOLO model did not load "
+              "-> DUCK DETECTION OFF. Install onnxruntime / a model that loads, "
+              "or set duck_detect_mode=auto to allow the HSV fallback.", flush=True)
+    print("[agent] duck_detect_mode=%s -> duckie backend=%s%s" % (
+        _duck_detect_mode, _duck_mode,
+        " (model trained on ducks; lane dashes are NOT detected as ducks)"
+        if _duck_mode == 'model' else ""), flush=True)
     _duck_hsv_cfg = timings.get('duck_hsv_cfg') or None
     # Other-bot detection by colour (the local bots are blue, with no AprilTag
     # plate, so the tag path can't see them). Runs inline alongside the duck
     # detector; cheap OpenCV. Disable with bot_hsv: false.
     _bot_hsv = bool(timings.get('bot_hsv', True))
     _bot_hsv_cfg = timings.get('bot_hsv_cfg') or None
+    # "In the way" gate for the DUCK/model obstacle path: a detection off to the
+    # side (centre-x outside the central band) is not in our lane, so don't brake
+    # for it. 0.0 (default) = OFF, so the sim/tests are byte-identical and only the
+    # close-OR-large rule applies; the bot overlay can set obstacle_cx_margin_frac
+    # (e.g. 0.20 = central 60%, matching the blue other-bot band) so a roadside duck
+    # no longer stops the bot. NOT applied to the stop-line clearance sentinel.
+    _obstacle_cx_margin = float(timings.get('obstacle_cx_margin_frac', 0.0))
 
     state = State.DRIVE
     current_speed = 0.0
@@ -369,7 +495,18 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     approach_max_px = 0               # biggest a stop/yield/light tag got this APPROACH (px proxy)
     relevant_lost_at: Optional[float] = None  # when the approached sign left the frame
     stopped_at: Optional[float] = None  # when we entered STOPPED (for the full-stop pause)
+    chosen_turn: Optional[str] = None   # legal direction chosen at the last intersection (telemetry)
+    junction_cross_dir: Optional[str] = None   # bias direction while crossing a junction (lane_follow)
+    junction_cross_until = 0.0          # wall-clock end of the junction-bias window
     obstacle_last_seen = -1e9   # wall-clock of the last positive obstacle detection (debounce)
+    # Obstacle CONFIRM: require this many consecutive fresh-detection cycles with an
+    # obstacle present before triggering the stop, so a single flicker (e.g. one bad
+    # HSV frame) can't stop the bot. Counted on DETECT cycles (not every loop), since
+    # detections only refresh then. 1 (default) = stop on the first positive = the
+    # original behaviour; the bot config raises it slightly. Pairs with the grace
+    # window below, which latches the stop AFTER the obstacle vanishes.
+    obstacle_confirm_frames = max(1, int(timings.get('obstacle_confirm_frames', 1)))
+    obstacle_pos_streak = 0     # consecutive positive detect cycles
 
     # The CONTROL path is single-threaded: this loop reads the camera (single
     # nvargus reader), runs lane EVERY frame (smooth steering) and the AprilTag
@@ -434,7 +571,32 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
         writes on the shared I2C bus (so the watchdog thread and the main loop
         never transact at once) and tolerant of a transient bus glitch
         (OSError 121 'Remote I/O error') so one bad transaction is logged and
-        skipped instead of crashing the whole agent thread."""
+        skipped instead of crashing the whole agent thread.
+
+        Manual override + drive_gate (the single wheel-write chokepoint, covering the
+        main loop AND the maneuver ticks alike):
+          * manual_cmd() returning (l, r) -> write THAT instead of the agent's command
+            (the BOT dashboard's manual drive). The AGENT does the write, so there is
+            never a second I2C writer thread. None from manual_cmd -> agent's command.
+          * drive_gate() False -> skip the write entirely (the SIM dashboard's manual
+            drive, where a separate TCP loop owns the wheels). Only consulted when
+            manual_cmd is not in use."""
+        if manual_cmd is not None:
+            try:
+                _mc = manual_cmd()
+            except Exception:
+                _mc = None
+            if _mc is not None:
+                try:
+                    left, right = float(_mc[0]), float(_mc[1])
+                except Exception:
+                    pass    # malformed command -> fall back to the agent's own
+        elif drive_gate is not None:
+            try:
+                if not drive_gate():
+                    return
+            except Exception:
+                pass        # a bad gate must never freeze/kill the control loop
         try:
             with _IO_LOCK:
                 wheels.set_wheels_speed(left, right)
@@ -579,7 +741,8 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                     veh = detect_vehicles_hsv(bgr2, _bot_hsv_cfg) or []
                 except Exception:
                     veh = []
-            duck_stop = bool(dets) and should_stop_for_obstacle(dets, bgr2.shape[0])[0]
+            duck_stop = bool(dets) and should_stop_for_obstacle(
+                dets, bgr2.shape[0], bgr2.shape[1], _obstacle_cx_margin)[0]
             _tick_st['obstacle'] = bool(duck_stop or veh)
             if observer is not None:
                 try:
@@ -669,9 +832,16 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
             #   * a duckie from the model (should_stop_for_obstacle), and
             #   * another Duckiebot close + centred ahead (_bot_ahead, via its
             #     Vehicle AprilTag) — "soft-stop when it sees a bot in its path".
-            duck_stop = bool(raw_dets) and should_stop_for_obstacle(raw_dets, frame_h)[0]
+            duck_stop = bool(raw_dets) and should_stop_for_obstacle(
+                raw_dets, frame_h, bgr.shape[1], _obstacle_cx_margin)[0]
             bot_stop  = _bot_ahead(signs, bgr.shape[1]) or bool(veh_dets)
-            if duck_stop or bot_stop:
+            # Advance the confirm streak only on fresh-detection cycles (detections
+            # are stale between them, so counting every loop would inflate it).
+            if frame_count % _detect_every == 0:
+                obstacle_pos_streak = obstacle_pos_streak + 1 if (duck_stop or bot_stop) else 0
+            # An obstacle counts as present once it's been confirmed for the required
+            # streak; the grace window then keeps it latched after it vanishes.
+            if obstacle_pos_streak >= obstacle_confirm_frames:
                 obstacle_last_seen = now
             obstacle_present = (now - obstacle_last_seen) < timings.get('obstacle_clear_grace_s', 1.0)
             obstacles = _OBSTACLE_BLOCK if obstacle_present else []
@@ -762,7 +932,8 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                                   react_distance_m=timings.get('sign_react_distance_m', 1.5),
                                   react_min_px=_sign_react_min_px,
                                   stop_min_px=_sign_stop_min_px,
-                                  red_band=red_band)
+                                  red_band=red_band,
+                                  use_red_band=_sign_use_red_band)
             # Backup commit — also the ROBUST "at the line" path on the bot. As the
             # bot reaches the stop line the sign goes OVERHEAD: its big tag rises
             # and clips off the TOP of the frame, so the tag disappears right when
@@ -792,40 +963,69 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                 state = new_state
 
             if state == State.DRIVE:
-                left, right = lane.compute_commands(rgb)
-                current_speed = ramp_speed(
-                    current_speed, timings['base_speed'], timings['ramp_max_step']
-                )
-                _safe_set_wheels(
-                    left  * current_speed * 2,
-                    right * current_speed * 2,
-                )
-                _set_blinker(leds, 'off')
-
-            elif state == State.APPROACH:
-                # Creep toward the line (don't ramp to a dead stop) until we're
-                # actually AT the stop line. Ramping to 0 made the bot halt the
-                # instant a still-distant sign was first seen, stranding it short
-                # of the line in APPROACH forever. STOPPED does the full stop.
-                current_speed = ramp_speed(
-                    current_speed, timings.get('approach_creep_speed', 0.12),
-                    timings['ramp_max_step']
-                )
-                _near_line = (approach_closest < timings.get('line_straight_distance_m', 0.6)
-                              or (_line_straight_px > 0 and approach_max_px >= _line_straight_px))
-                if _near_line:
-                    # Final stretch: the lane markings end at the intersection box,
-                    # so lane-steering here yanks the heading right when we want to
-                    # roll straight up to the painted line. Creep dead straight.
-                    lane.compute_commands(rgb)   # keep masks/debug fresh
-                    _safe_set_wheels(current_speed, current_speed)
+                left, right = lane.compute_commands(rgb)   # always run (keeps masks/telemetry fresh)
+                if junction_cross_dir is not None and now < junction_cross_until:
+                    # JUNCTION CROSSING: the SIGN decision drives the wheels DIRECTLY.
+                    # Lane servoing is IGNORED here (it follows the white line, which in
+                    # the junction box leads the wrong way — chose left but went right).
+                    # We command the chosen turn at a controlled speed; once across, the
+                    # else-branch below resumes lane-following and re-centres.
+                    cl, cr = _junction_cross_wheels(junction_cross_dir,
+                                                    _junction_cross_speed, _junction_bias)
+                    current_speed = _junction_cross_speed       # keep the ramp coherent for resume
+                    _safe_set_wheels(cl, cr)
+                    _set_blinker(leds, junction_cross_dir
+                                 if junction_cross_dir in ('left', 'right') else 'off', now)
                 else:
-                    left, right = lane.compute_commands(rgb)
+                    junction_cross_dir = None
+                    current_speed = ramp_speed(
+                        current_speed, timings['base_speed'], timings['ramp_max_step']
+                    )
                     _safe_set_wheels(
                         left  * current_speed * 2,
                         right * current_speed * 2,
                     )
-                _set_brake(leds, on=True)
+                    _set_blinker(leds, 'off')
+
+            elif state == State.APPROACH:
+                if not _approach_creep:
+                    # NO APPROACH MECHANIC (default): a sign is in view but we just
+                    # keep FOLLOWING THE LANE normally — same as DRIVE, full speed,
+                    # LEDs off, no creep, no dead-straight. We do NOT act on the sign
+                    # yet; the commit logic above (sign lost after getting close ≈ red
+                    # line reached, sign very close, or red line/band seen) is what
+                    # flips us to STOPPED to execute the instruction. This state is
+                    # just "a sign is pending" — behaviourally indistinguishable from
+                    # DRIVE so the bot never slows or swerves merely because it SAW a
+                    # sign far off.
+                    left, right = lane.compute_commands(rgb)
+                    current_speed = ramp_speed(
+                        current_speed, timings['base_speed'], timings['ramp_max_step']
+                    )
+                    _safe_set_wheels(left * current_speed * 2, right * current_speed * 2)
+                    _set_blinker(leds, 'off')
+                else:
+                    # LEGACY creep approach (approach_creep: true): decelerate to a
+                    # creep toward the line, brake LEDs on, dead-straight near the box.
+                    current_speed = ramp_speed(
+                        current_speed, timings.get('approach_creep_speed', 0.12),
+                        timings['ramp_max_step']
+                    )
+                    _near_line = (approach_closest < timings.get('line_straight_distance_m', 0.6)
+                                  or (_line_straight_px > 0 and approach_max_px >= _line_straight_px))
+                    if _near_line:
+                        # Final stretch: the lane markings end at the intersection box,
+                        # so lane-steering here yanks the heading right when we want to
+                        # roll straight up to the painted line. Creep dead straight.
+                        lane.compute_commands(rgb)   # keep masks/debug fresh
+                        _safe_set_wheels(current_speed, current_speed)
+                    else:
+                        left, right = lane.compute_commands(rgb)
+                        _safe_set_wheels(
+                            left  * current_speed * 2,
+                            right * current_speed * 2,
+                        )
+                    _set_brake(leds, on=True)
 
             elif state == State.STOPPED:
                 _safe_set_wheels(0.0, 0.0)
@@ -852,11 +1052,40 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                                                 obstacles, frame_h)
                     if (clear or timed_out) and legal_turns:
                         choice = random.choice(sorted(legal_turns))
-                        state = next_state(state, {
-                            'left':     'choose_turn_left',
-                            'right':    'choose_turn_right',
-                            'straight': 'choose_straight',
-                        }[choice])
+                        chosen_turn = choice
+                        if _turn_mode == 'lane_follow':
+                            # FOLLOW THE ROAD WITH CHANGED RULES (no pre-scripted arc).
+                            # The sign's RULES have now been applied — stopped at the
+                            # line, held the pause, checked right-of-way/obstacle — so
+                            # we RESUME LANE-FOLLOWING straight back into DRIVE and let
+                            # the camera carry the bot through the junction onto the
+                            # outgoing lane. The legal direction is still chosen + logged
+                            # (telemetry) so the decision is visible, but the MOTION stays
+                            # closed-loop on the lane instead of a blind open-loop tick arc
+                            # (which drove the bot off this venue's road). turn_mode is set
+                            # per-platform: 'maneuver' (sim, keeps the arc demo) vs
+                            # 'lane_follow' (the real bot).
+                            signs_at_intersection = []
+                            intersection_signs = {}
+                            light_was_red = False
+                            intersection_since = None
+                            ignore_signs_until = now + timings.get('sign_cooldown', 4.0)
+                            # Arm the junction steering bias so the bot crosses toward
+                            # the CHOSEN legal branch (not a stray edge). All three legal
+                            # choices get a deliberate crossing: left/right bias toward
+                            # the branch, straight rolls dead-straight. bias<=0 disables.
+                            if _junction_bias > 0.0:
+                                junction_cross_dir = choice
+                                junction_cross_until = now + _junction_cross_s
+                            else:
+                                junction_cross_dir = None
+                            state = State.DRIVE
+                        else:
+                            state = next_state(state, {
+                                'left':     'choose_turn_left',
+                                'right':    'choose_turn_right',
+                                'straight': 'choose_straight',
+                            }[choice])
                     elif not clear and not timed_out:
                         state = next_state(state, 'wait')
 
@@ -957,6 +1186,11 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                     },
                     'legal_turns': (sorted(merge_turn_constraints(signs_at_intersection))
                                     if state in (State.STOPPED, State.WAIT) else None),
+                    'turn_mode': _turn_mode,
+                    'chosen_turn': chosen_turn,
+                    'junction_cross': (junction_cross_dir
+                                       if (junction_cross_dir is not None
+                                           and now < junction_cross_until) else None),
                 })
 
             time.sleep(0.02)

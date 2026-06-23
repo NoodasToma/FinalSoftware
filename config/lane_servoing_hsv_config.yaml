@@ -1,3 +1,8 @@
+# Fill the DASHED yellow centre line: dilate the edge mask so each filled-square dash
+# becomes a solid detected blob (like the white line) instead of just its thin border.
+# ~doubles yellow detection with no lane-centre bias / no road flood, so the bot tracks
+# the lane MIDDLE instead of drifting onto the yellow on curves. false = thin borders only.
+chunky_fill: true
 white_lower_h: 0
 white_lower_s: 0
 white_lower_v: 134
