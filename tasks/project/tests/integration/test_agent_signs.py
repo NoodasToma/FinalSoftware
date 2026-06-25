@@ -130,3 +130,94 @@ def test_duckie_soft_stop_overrides():
     # while the obstacle is present the wheels are parked
     stopped = [s for s in snaps if s.get("obstacle_stop")]
     assert any(s["wheels"]["left"] == 0.0 and s["wheels"]["right"] == 0.0 for s in stopped)
+
+
+# ---------------------------------------------------------------------------
+#  Other-bot soft-stop + obstacle debounce — the real-bot-footage fixes.
+#
+#  From the dashboard recording: a blue Duckiebot filled the frame for seconds while
+#  the bot kept MOVING and drove into it. Cause: on this (agent_signs) path vehicle
+#  detections only fed the FSM's CHECKPATH yield, so a bot DEAD AHEAD was ignored
+#  unless at an intersection. These tests pin that an in-path bot now soft-stops,
+#  an off-side bot does not, and a one-cycle yellow-marking flicker can't phantom-stop.
+def _blue_bot_provider(until=1.2, box=(270, 300, 380, 440)):
+    import cv2
+
+    def provider(t):
+        f = blank_frame()
+        if t < until:
+            # vivid blue (BGR 180,40,10 ~ HSV 114,241,180) = another Duckiebot body
+            cv2.rectangle(f, (box[0], box[1]), (box[2], box[3]), (180, 40, 10), -1)
+        return f
+    return provider
+
+
+def test_other_bot_in_path_soft_stops():
+    cam = FakeCamera(_blue_bot_provider(until=1.2))
+    wheels, leds = FakeWheels(), FakeLEDs()
+    timings = {'object_detection': False, 'duck_hsv': False, 'bot_hsv': True,
+               'detect_every': 1, 'obstacle_clear_grace_s': 0.2}
+    snaps = _run(cam, wheels, leds, timings=timings,
+                 on_update=lambda s, c, w: any(x.get("obstacle_stop") for x in s),
+                 max_seconds=4)
+    assert any(s.get("obstacle_stop") for s in snaps), \
+        "never soft-stopped for an in-path Duckiebot (it would drive into it)"
+    stopped = [s for s in snaps if s.get("obstacle_stop")]
+    assert any(s["wheels"]["left"] == 0.0 and s["wheels"]["right"] == 0.0 for s in stopped)
+
+
+def test_other_bot_off_to_the_side_does_not_stop():
+    # a blue bot hugging the LEFT edge is not in our lane -> the detector's lateral
+    # gate drops it, so no phantom soft-stop and the bot keeps lane-following.
+    cam = FakeCamera(_blue_bot_provider(until=3.0, box=(10, 300, 110, 440)))
+    wheels, leds = FakeWheels(), FakeLEDs()
+    timings = {'object_detection': False, 'duck_hsv': False, 'bot_hsv': True,
+               'detect_every': 1, 'obstacle_clear_grace_s': 0.2}
+    snaps = _run(cam, wheels, leds, timings=timings, max_seconds=1.5)
+    assert not any(s.get("obstacle_stop") for s in snaps), \
+        "soft-stopped for a bot off to the side (not in our path)"
+    assert wheels.moved()
+
+
+def test_obstacle_confirm_debounces_a_one_cycle_flicker():
+    """A brief yellow glint (a road-marking flicker) must NOT latch a stop when
+    obstacle_confirm_frames > 1 — the fix for false stops on an empty road."""
+    import cv2
+    state = {"reads": 0}
+
+    def provider(_t):
+        f = blank_frame()
+        state["reads"] += 1
+        if state["reads"] <= 2:                 # duck visible for only 2 detect cycles
+            cv2.circle(f, (325, 360), 70, (0, 220, 240), -1)
+        return f
+
+    cam = FakeCamera(provider)
+    wheels, leds = FakeWheels(), FakeLEDs()
+    timings = {'object_detection': True, 'duck_hsv': True, 'bot_hsv': False,
+               'detect_every': 1, 'obstacle_confirm_frames': 6, 'obstacle_clear_grace_s': 0.2}
+    snaps = _run(cam, wheels, leds, timings=timings, max_seconds=1.5)
+    assert not any(s.get("obstacle_stop") for s in snaps), \
+        "a 2-cycle flicker latched a stop despite obstacle_confirm_frames=6"
+
+
+def test_obstacle_confirm_still_stops_for_a_persistent_duck():
+    # the debounce must not BREAK real stops: a duck seen every frame satisfies the
+    # confirm streak and stops, even with a raised threshold.
+    import cv2
+
+    def provider(t):
+        f = blank_frame()
+        if t < 2.0:
+            cv2.circle(f, (325, 360), 70, (0, 220, 240), -1)
+        return f
+
+    cam = FakeCamera(provider)
+    wheels, leds = FakeWheels(), FakeLEDs()
+    timings = {'object_detection': True, 'duck_hsv': True, 'bot_hsv': False,
+               'detect_every': 1, 'obstacle_confirm_frames': 3, 'obstacle_clear_grace_s': 0.2}
+    snaps = _run(cam, wheels, leds, timings=timings,
+                 on_update=lambda s, c, w: any(x.get("obstacle_stop") for x in s),
+                 max_seconds=4)
+    assert any(s.get("obstacle_stop") for s in snaps), \
+        "a persistent duck never stopped despite the confirm streak being satisfiable"

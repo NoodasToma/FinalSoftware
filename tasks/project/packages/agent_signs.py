@@ -63,6 +63,12 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     duck_cfg = timings.get('duck_hsv_cfg') or None
     veh_cfg = timings.get('bot_hsv_cfg') or None
     obstacle_grace = float(timings.get('obstacle_clear_grace_s', 1.0))
+    # Obstacle debounce + lateral gate (parity with the project agent.main, which the
+    # bot path was missing): require an obstacle on this many CONSECUTIVE fresh-detection
+    # cycles before braking (kills one-frame yellow-marking / glare phantom stops), and
+    # ignore duck blobs outside the central band (off-side ROAD MARKINGS, not in our path).
+    obstacle_confirm = max(1, int(timings.get('obstacle_confirm_frames', 1)))
+    obstacle_cx_margin = float(timings.get('obstacle_cx_margin_frac', 0.0))
     duck_enabled = bool(timings.get('object_detection', True)) and bool(timings.get('duck_hsv', True))
     veh_enabled = bool(timings.get('bot_hsv', True))
 
@@ -119,6 +125,7 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
     raw_dets = []
     veh_dets = []
     obstacle_last_seen = -1e9
+    obstacle_streak = 0
 
     try:
         while not stop_event.is_set():
@@ -160,10 +167,26 @@ def main(camera, wheels, leds, stop_event, *, observer=None, frame_observer=None
                 sign_state = getattr(lane, 'sign_state', '?')
             state_name = sign_state.name if hasattr(sign_state, 'name') else str(sign_state)
 
-            # Duckie obstacle soft-stop (debounced) layered on top: a close duck halts
-            # the bot until it clears, whatever the FSM/lane wanted.
-            duck_stop = bool(raw_dets) and should_stop_for_obstacle(raw_dets, frame_h)[0]
-            if duck_stop:
+            # Obstacle soft-stop (debounced) layered on top of the FSM/lane command:
+            # the bot brakes and holds until the obstacle clears, whatever the lane
+            # wanted. TWO sources feed it (matching the project agent.main):
+            #   * a close duckie ahead (should_stop_for_obstacle) — now with the same
+            #     lateral "in the way" gate, so yellow ROAD MARKINGS off to the side
+            #     don't brake the bot, and
+            #   * another Duckiebot in our path: detect_vehicles_hsv only returns blobs
+            #     that are already low + roughly-centred + close, so any return is an
+            #     in-path bot. Without this the bot only ever reacted to other bots when
+            #     a yellow wheel happened to trip the DUCK detector — it drove into them.
+            # The confirm streak is advanced only on fresh-detection cycles (detections
+            # are stale between them), so a one-cycle yellow-marking / glare flicker can't
+            # trigger a phantom stop; the grace window then keeps a real stop latched
+            # after the obstacle dips out of the down-tilted view.
+            duck_stop = bool(raw_dets) and should_stop_for_obstacle(
+                raw_dets, frame_h, bgr.shape[1], obstacle_cx_margin)[0]
+            veh_stop = bool(veh_dets)
+            if frame_count % detect_every == 0:
+                obstacle_streak = obstacle_streak + 1 if (duck_stop or veh_stop) else 0
+            if obstacle_streak >= obstacle_confirm:
                 obstacle_last_seen = now
             obstacle_present = (now - obstacle_last_seen) < obstacle_grace
             if obstacle_present:

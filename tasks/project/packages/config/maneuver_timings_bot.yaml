@@ -136,16 +136,25 @@ object_detection: true
 duck_detect_mode: auto
 
 # Obstacle confirm: require this many consecutive fresh-detection cycles with an
-# obstacle before stopping, so one flickery HSV frame can't trigger a phantom stop.
-# 2 is a light debounce (the grace window still latches the stop after it clears).
+# obstacle before stopping, so one flickery HSV frame (a yellow road-marking glint)
+# can't trigger a phantom stop on an empty road. Applies to BOTH the duck soft-stop
+# and the blue other-bot soft-stop on the sign-agent (agent_signs) path. 2 is a light
+# debounce (the grace window still latches the stop after it clears). RAISE for fewer
+# false stops; do not raise far or braking for a real duck/bot lags.
+#   NOTE: this only suppresses BRIEF (sub-~0.3 s) false detections. A chunky yellow
+#   intersection dash that is read as a duck for a full second is NOT separable from a
+#   real duck by colour or shape on this venue (both span H~28-38; the real duck even
+#   dips to the dash's compactness) -> only the trained model can reject it, and it
+#   can't load on this Jetson (see duck_detect_mode). Tune duck_hsv_cfg, not this.
 obstacle_confirm_frames: 2
 
-# "In the way" gate for the model/should_stop_for_obstacle duck path: ignore a duck
+# "In the way" gate for the should_stop_for_obstacle duck path: ignore a duck
 # detection whose centre-x is outside the central 60% of the frame (off to the side,
-# not in our lane), so the bot only soft-stops for an obstacle actually ahead.
+# not in our lane), so the bot only soft-stops for an obstacle actually ahead. The
+# sign-agent (agent_signs) now passes this for the HSV duck path too (it was dead on
+# that path before), and it also guards the model path if the trained model loads.
 # 0.20 matches the blue other-bot band (bot_stop_center_frac / detect_vehicles_hsv).
-# The bot's own duck path is HSV (duck_hsv_cfg has its OWN cx_margin_frac), so this
-# only engages if the trained model loads; it is harmless defense-in-depth otherwise.
+# Defence-in-depth with duck_hsv_cfg.cx_margin_frac (which gates the detector itself).
 # Set 0.0 to disable. (Sim leaves this unset = 0.0 = off.)
 obstacle_cx_margin_frac: 0.20
 
@@ -200,16 +209,23 @@ duck_hsv_cfg:
 # (the Vehicle-AprilTag stop path still works for bots that carry a tag plate).
 bot_hsv: true
 bot_hsv_cfg:
-  blue_lower: [100, 110, 60]   # vivid blue only: higher S/V drops muted wall/floor tones
-  blue_upper: [120, 255, 255]  # cut hue at 120 (was 130) so purple/violet walls aren't "blue"
-  top_ignore_frac: 0.35        # blank the top ~35% (lowered from 45% so a bot a bit further
-                               # ahead — which sits higher in the down-tilted view — is seen)
-  min_cy_frac: 0.42            # blob CENTRE in the bottom ~58%. LOWERED from 0.55 to detect bots
-                               # EARLIER (a farther bot sits higher in frame); still well below the
-                               # test-room chair (measured cyFrac ~0.10) so furniture stays rejected.
-  min_bbox_area_frac: 0.020    # >= 2% of frame (was 4.5%): the MAIN "detect sooner" lever — a
-                               # smaller blue blob = a more DISTANT bot, so we brake earlier.
-  min_fill: 0.45               # solid blue body, not scattered specular/glare pixels (anti-furniture)
+  # RETUNED from real-bot footage (the old band MISSED the bot in ~95% of frames and
+  # FALSE-fired on dark road). Measured on the bot's own camera: the real Duckiebot
+  # body is VIVID blue at H~100-125, S~180-220, V~75-95; bare ASPHALT/shadow reads as
+  # a DESATURATED dark "blue" at S~85 (this was the empty-road false stop). So the one
+  # clean discriminator is SATURATION:
+  blue_lower: [100, 140, 50]   # S floor 140 keeps the vivid bot (S>=180) and rejects dark
+                               # road/shadow (S~85). V floor stays low (the body V is ~75-95).
+  blue_upper: [128, 255, 255]  # H up to 128: the bot body reaches H~123-125. The old 120 cap
+                               # CLIPPED the body, fragmenting its mask below the area gate so the
+                               # bot was never detected. 128 still excludes purple/violet walls.
+  top_ignore_frac: 0.35        # blank the top ~35% of the frame (horizon furniture/people)
+  min_cy_frac: 0.42            # blob CENTRE in the bottom ~58% — a bot in our lane sits LOW in the
+                               # down-tilted view; furniture (chair measured cyFrac ~0.10) is rejected
+                               # here regardless of colour (defence-in-depth with the S floor).
+  min_bbox_area_frac: 0.020    # >= 2% of frame; a close bot ahead easily exceeds this.
+  min_fill: 0.40               # 0.40 (was 0.45): the real body mask isn't perfectly solid at range,
+                               # and 0.45 dropped it; 0.40 still rejects scattered specular/glare blue.
   cx_margin_frac: 0.22         # roughly ahead in our lane, not off to the side
 
 # DRIVE speed factor. The agent commands wheels = lane_output * base_speed * 2.

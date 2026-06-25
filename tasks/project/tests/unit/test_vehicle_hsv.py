@@ -74,3 +74,51 @@ def test_empty_or_none_frame_is_safe():
 def test_all_detections_are_vehicle_class():
     dets = detect_vehicles_hsv(_blue_box(270, 300, 370, 440))
     assert dets and all(cls == 1 for _bbox, _score, cls in dets)
+
+
+# ------------------------------------------------------------------------------
+#  SHIPPED real-bot config (bot_hsv_cfg in maneuver_timings_bot.yaml).
+#
+#  Retuned from real-bot footage where the OLD band MISSED the bot in ~95% of
+#  frames AND false-stopped on bare road. Measured on the bot's own camera:
+#    * a real Duckiebot body is VIVID blue   -> S ~ 180-220
+#    * dark asphalt / shadow reads as a       -> S ~ 85   ("blue" but desaturated)
+#      desaturated "blue"
+#  so the one clean separator is SATURATION (blue_lower S-floor = 140). These tests
+#  pin that the shipped config detects a vivid bot and rejects desaturated dark road
+#  at the SAME size/position — i.e. the fix can't silently regress to either failure.
+import os
+import yaml
+
+_BOT_CFG = yaml.safe_load(open(os.path.join(
+    os.path.dirname(__file__), "..", "..", "packages", "config",
+    "maneuver_timings_bot.yaml")))["bot_hsv_cfg"]
+
+
+def _hsv_blob(h, s, v, x1=270, y1=300, x2=380, y2=440):
+    """A frame with a low-centred blob of exactly HSV (h,s,v) on grey road."""
+    f = _frame()
+    patch = np.full((y2 - y1, x2 - x1, 3), (h, s, v), np.uint8)
+    f[y1:y2, x1:x2] = cv2.cvtColor(patch, cv2.COLOR_HSV2BGR)
+    return f
+
+
+def test_shipped_cfg_detects_a_vivid_blue_bot():
+    # vivid bot body (S=200, H=114, V=90) low + centred + large -> detected.
+    dets = detect_vehicles_hsv(_hsv_blob(114, 200, 90), _BOT_CFG)
+    assert dets, "shipped bot config failed to detect a vivid in-path Duckiebot"
+    assert all(cls == 1 for _b, _s, cls in dets)
+
+
+def test_shipped_cfg_rejects_desaturated_dark_road():
+    # bare asphalt / shadow (S=85) at the SAME size+position must NOT be a bot
+    # (this was the empty-road false stop). The S-floor=140 rejects it.
+    assert detect_vehicles_hsv(_hsv_blob(114, 85, 80), _BOT_CFG) == []
+
+
+def test_shipped_cfg_keeps_body_hue_up_to_125():
+    # the real body reaches H~123-125; the old upper cap of 120 clipped it and
+    # fragmented the mask below the area gate (the bot was never seen). The shipped
+    # upper (128) must still detect a blob at H=124.
+    assert detect_vehicles_hsv(_hsv_blob(124, 200, 90), _BOT_CFG), \
+        "shipped band clips the bot body hue (regression to the missed-bot bug)"
