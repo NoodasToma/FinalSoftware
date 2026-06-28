@@ -4,7 +4,6 @@ Defines every station the bot is tested at, and the geometry of the sign bays in
 the scene. Imported by:
   * tasks/project/sim_tests/course_suite.py  -> assertions (per-sign + continuous)
   * servers/project/virtual_server.py        -> dashboard per-sign "jump" buttons
-  * tasks/project/sim_tests/build_strip.py    -> emits the .tscn nodes for the bays
 
 so the test definitions and the scene geometry can never drift apart.
 
@@ -113,14 +112,13 @@ def _bay_station(name, cell, trig, test, legal):
 #
 # These are ONLY the stations that exist in the current project.tscn — the
 # drivable LOOP with its spaced, varied signs (4-way stop+sign, the east T-junction,
-# the duckie obstacle, the parked vehicle). The traffic light was removed/stashed
-# (see tasks/project/_stashed/traffic_lights/), and the dense off-track SignBays
-# strip + roadside decode row were removed in favour of an obstacle-course layout.
+# the duckie obstacle, the parked vehicle). The traffic light and the dense off-track
+# SignBays strip + roadside decode row were removed in favour of an obstacle-course
+# layout.
 #
-# The SIGN_BAYS / DECODE_SIGNS definitions above are KEPT (build_strip.py can still
-# regenerate the bays into a scene if exhaustive in-sim per-sign coverage is wanted
-# later) but are NO LONGER appended here, so every dashboard "jump" button and every
-# "Run all tests" station points at something that actually exists on the course.
+# The SIGN_BAYS / DECODE_SIGNS definitions above are KEPT but are NO LONGER appended
+# here, so every dashboard "jump" button and every "Run all tests" station points at
+# something that actually exists on the course.
 # Per-sign logic is covered headlessly by tasks/project/tests/ instead.
 STATIONS: list[dict] = [
     # --- LOOP stations (reuse proven poses from behaviour_suite) -------------

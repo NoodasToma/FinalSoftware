@@ -29,15 +29,13 @@ from typing import Optional
 # --- Sim camera fidelity config ----------------------------------------------
 # Godot BotCamera renders a 640x480 SubViewport (scenes/robot/duckie_bot.tscn).
 # cx, cy = image centre. fx = fy (square pixels). The focal length depends on
-# Godot's fov convention, so it is CALIBRATED EMPIRICALLY (place a known tag at a
-# known distance, fx = side_px * distance / tag_size) by
-# tasks/project/sim_tests/calibrate_intrinsics() and pasted back here. The value
-# below is the calibrated result; re-run calibration if the camera fov/viewport
-# changes.
+# Godot's fov convention, so it was CALIBRATED EMPIRICALLY (place a known tag at a
+# known distance, fx = side_px * distance / tag_size) and pasted back here. The value
+# below is the calibrated result; re-derive it if the camera fov/viewport changes.
 _SIM_TAG_SIZE_DEFAULT = 0.13                       # unified sim AprilTag plane (metres) — "normal"-sized signs
-# fx CALIBRATED empirically by calibrate_intrinsics.py: est_distance matched the
-# true camera->tag distance within ~3% across 0.4-1.1 m. (Initial fov guess of
-# 313 was wrong; the Godot camera's effective focal length is ~252 px.)
+# fx calibrated empirically: est_distance matched the true camera->tag distance within
+# ~3% across 0.4-1.1 m. (Initial fov guess of 313 was wrong; the Godot camera's
+# effective focal length is ~252 px.)
 _SIM_APRILTAG_DEFAULT = (252.0, 252.0, 320.0, 240.0)   # (fx, fy, cx, cy)
 
 
